@@ -3,8 +3,20 @@ rpm -ivh /root/3proxy-0.9.4-2.el7.x86_64.rpm
 sleep 2
 mkdir /etc/3proxy
 touch /etc/3proxy/passwd
-echo 'xjp:CL:zxc@xjp123456' >> /etc/3proxy/passwd
+echo 'user1:CL:23333' >> /etc/3proxy/passwd
 systemctl enable 3proxy
+# 1. 放行TCP端口50001
+firewall-cmd --permanent --add-port=50001/tcp
+
+# 2. 放行TCP端口60001
+firewall-cmd --permanent --add-port=60001/tcp
+
+# 3.放行UDP端口范围
+firewall-cmd --permanent --add-port=10001-65000/udp
+
+
+# 4. 重新加载firewalld配置使更改生效
+firewall-cmd --reload
 cat /dev/null > /etc/3proxy.cfg
 echo 'daemon' >> /etc/3proxy.cfg
 echo 'timeouts 1 5 30 60 180 1800 15 60' >> /etc/3proxy.cfg
