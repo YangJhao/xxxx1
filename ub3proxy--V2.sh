@@ -1,3 +1,4 @@
+#!/bin/bash
 cd /opt
 wget https://github.com/z3APA3A/3proxy/releases/download/0.9.4/3proxy-0.9.4.x86_64.deb
 sudo dpkg -i 3proxy-0.9.4.x86_64.deb
@@ -35,6 +36,7 @@ echo '* soft nofile 200000' >> /etc/security/limits.conf
 echo '* hard nofile 200000' >> /etc/security/limits.conf
 
 sudo systemctl restart 3proxy
+
 
 
 
