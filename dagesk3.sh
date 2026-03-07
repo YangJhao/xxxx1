@@ -7,13 +7,13 @@ rpm -ivh /root/3proxy-0.9.4-2.el7.x86_64.rpm
 sleep 2
 mkdir /etc/3proxy
 touch /etc/3proxy/passwd
-echo 'a9898:CL:a9898' >> /etc/3proxy/passwd
+echo 'user1:CL:23333' >> /etc/3proxy/passwd
 systemctl enable 3proxy
 # 1. 放行TCP端口50001
 firewall-cmd --permanent --add-port=50001/tcp
 
 # 2. 放行TCP端口60001
-firewall-cmd --permanent --add-port=19898/tcp
+firewall-cmd --permanent --add-port=60001/tcp
 
 # 3.放行UDP端口范围
 firewall-cmd --permanent --add-port=10001-65000/udp
@@ -39,7 +39,7 @@ echo 'maxconn 100000' >> /etc/3proxy.cfg
 echo 'auth strong' >> /etc/3proxy.cfg
 echo 'allow *' >> /etc/3proxy.cfg
 echo 'proxy -a -p50001' >> /etc/3proxy.cfg
-echo 'socks -a -p19898' >> /etc/3proxy.cfg
+echo 'socks -a -p60001' >> /etc/3proxy.cfg
 echo 'flush' >> /etc/3proxy.cfg
 sleep 2
 systemctl restart 3proxy
