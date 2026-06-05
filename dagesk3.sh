@@ -13,7 +13,7 @@ systemctl enable 3proxy
 #firewall-cmd --permanent --add-port=50001/tcp
 
 # 2. 放行TCP端口60001
-firewall-cmd --permanent --add-port=10001-60001/tcp
+firewall-cmd --permanent --add-port=10001-65000/tcp
 
 # 3.放行UDP端口范围
 firewall-cmd --permanent --add-port=10001-65000/udp
