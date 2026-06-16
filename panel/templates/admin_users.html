@@ -1,0 +1,367 @@
+{% extends "base.html" %}
+{% block title %}客户管理 - 42IPwin{% endblock %}
+{% block content %}
+<div class="mgmt-page">
+  <div class="page-header mgmt-head">
+    <div>
+      <h2><i class="bi bi-person-lines-fill"></i> 客户管理</h2>
+      <p>管理节点客户、项目和套餐，不显示后台登录账号。</p>
+    </div>
+  </div>
+
+  <div class="mgmt-actions">
+    <button class="btn btn-primary" id="btnNewCustomer"><i class="bi bi-person-plus"></i> 新增客户</button>
+    <button class="btn btn-primary" id="btnNewProject"><i class="bi bi-folder-plus"></i> 新增项目</button>
+    <button class="btn btn-primary" id="btnNewPlan"><i class="bi bi-box-seam"></i> 新增套餐</button>
+  </div>
+
+  <section class="mgmt-section">
+    <div class="mgmt-section-head">
+      <h5>客户列表</h5>
+      <span id="customerCount">0 个客户</span>
+    </div>
+    <div class="mgmt-table-wrap">
+      <table class="line-table centered-table mgmt-table simple-mgmt-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>客户</th>
+            <th>备注</th>
+            <th>创建时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="customerTable"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="mgmt-section">
+    <div class="mgmt-section-head">
+      <h5>项目列表</h5>
+      <span id="projectCount">0 个项目</span>
+    </div>
+    <div class="mgmt-table-wrap">
+      <table class="line-table centered-table mgmt-table simple-mgmt-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>项目</th>
+            <th>备注</th>
+            <th>创建时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="projectTable"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="mgmt-section">
+    <div class="mgmt-section-head">
+      <h5>套餐列表</h5>
+      <span id="planCount">0 个套餐</span>
+    </div>
+    <div class="mgmt-table-wrap">
+      <table class="line-table centered-table mgmt-table plan-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>套餐</th>
+            <th>带宽</th>
+            <th>流量</th>
+            <th>天数</th>
+            <th>备注</th>
+            <th>创建时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="planTable"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<div class="modal fade" id="customerModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title" id="customerModalTitle">新增客户</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="customerId">
+        <label class="form-label">客户</label>
+        <input class="form-control mb-3" id="customerName" autocomplete="off">
+        <label class="form-label">备注</label>
+        <textarea class="form-control" id="customerNote" rows="3"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveCustomer">保存</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="projectModal" tabindex="-1">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title" id="projectModalTitle">新增项目</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="projectId">
+        <label class="form-label">项目</label>
+        <input class="form-control mb-3" id="projectName" autocomplete="off">
+        <label class="form-label">备注</label>
+        <textarea class="form-control" id="projectNote" rows="3"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveProject">保存</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="planModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title" id="planModalTitle">新增套餐</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="planId">
+        <div class="plan-form-grid">
+          <div>
+            <label class="form-label">套餐</label>
+            <input class="form-control" id="planName" autocomplete="off">
+          </div>
+          <div>
+            <label class="form-label">带宽</label>
+            <input class="form-control" id="planBandwidth" placeholder="例如 10mbit">
+          </div>
+          <div>
+            <label class="form-label">流量</label>
+            <input class="form-control" id="planTraffic" placeholder="例如 100GB">
+          </div>
+          <div>
+            <label class="form-label">天数</label>
+            <input class="form-control" id="planDays" type="number" min="1" value="30">
+          </div>
+          <div class="plan-note-field">
+            <label class="form-label">备注</label>
+            <textarea class="form-control" id="planNote" rows="3"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSavePlan">保存</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let customers = [];
+let projects = [];
+let plans = [];
+
+function formatDate(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function rowNote(value) {
+  const text = String(value || '').trim();
+  return text && text !== '-' ? escapeHtml(text) : '<span class="text-muted">-</span>';
+}
+
+async function loadCustomers() {
+  const r = await api.get('/api/node-customers');
+  if (!r.ok) return toast(r.error || '读取客户失败', 'error');
+  customers = r.data || [];
+  $('#customerCount').text(`${customers.length} 个客户`);
+  const tb = $('#customerTable').empty();
+  if (!customers.length) {
+    tb.append('<tr><td colspan="5" class="empty-cell">暂无客户</td></tr>');
+    return;
+  }
+  customers.forEach(u => tb.append(`
+    <tr>
+      <td>${u.id}</td>
+      <td class="strong-cell">${escapeHtml(u.name || '-')}</td>
+      <td>${rowNote(u.note)}</td>
+      <td>${escapeHtml(formatDate(u.created_at))}</td>
+      <td class="line-actions">
+        <button class="mini-btn" onclick="editCustomer(${u.id})">修改</button>
+        <button class="mini-btn danger" onclick="deleteCustomer(${u.id})">删除</button>
+      </td>
+    </tr>
+  `));
+}
+
+async function loadProjects() {
+  const r = await api.get('/api/projects');
+  if (!r.ok) return toast(r.error || '读取项目失败', 'error');
+  projects = r.data || [];
+  $('#projectCount').text(`${projects.length} 个项目`);
+  const tb = $('#projectTable').empty();
+  if (!projects.length) {
+    tb.append('<tr><td colspan="5" class="empty-cell">暂无项目</td></tr>');
+    return;
+  }
+  projects.forEach(p => tb.append(`
+    <tr>
+      <td>${p.id}</td>
+      <td class="strong-cell">${escapeHtml(p.name || '-')}</td>
+      <td>${rowNote(p.note)}</td>
+      <td>${escapeHtml(formatDate(p.created_at))}</td>
+      <td class="line-actions">
+        <button class="mini-btn" onclick="editProject(${p.id})">修改</button>
+        <button class="mini-btn danger" onclick="deleteProject(${p.id})">删除</button>
+      </td>
+    </tr>
+  `));
+}
+
+async function loadPlans() {
+  const r = await api.get('/api/plans');
+  if (!r.ok) return toast(r.error || '读取套餐失败', 'error');
+  plans = r.data || [];
+  $('#planCount').text(`${plans.length} 个套餐`);
+  const tb = $('#planTable').empty();
+  if (!plans.length) {
+    tb.append('<tr><td colspan="8" class="empty-cell">暂无套餐</td></tr>');
+    return;
+  }
+  plans.forEach(p => tb.append(`
+    <tr>
+      <td>${p.id}</td>
+      <td class="strong-cell">${escapeHtml(p.name || '-')}</td>
+      <td><span class="metric-pill metric-speed">${escapeHtml(p.bandwidth || '-')}</span></td>
+      <td><span class="metric-pill metric-free">${escapeHtml(p.traffic || '-')}</span></td>
+      <td>${escapeHtml(p.days || '-')}</td>
+      <td>${rowNote(p.note)}</td>
+      <td>${escapeHtml(formatDate(p.created_at))}</td>
+      <td class="line-actions">
+        <button class="mini-btn" onclick="editPlan(${p.id})">修改</button>
+        <button class="mini-btn danger" onclick="deletePlan(${p.id})">删除</button>
+      </td>
+    </tr>
+  `));
+}
+
+function openCustomerModal(row = null) {
+  $('#customerModalTitle').text(row ? '修改客户' : '新增客户');
+  $('#customerId').val(row ? row.id : '');
+  $('#customerName').val(row ? row.name : '');
+  $('#customerNote').val(row ? (row.note === '-' ? '' : row.note) : '');
+  new bootstrap.Modal(document.getElementById('customerModal')).show();
+}
+
+function openProjectModal(row = null) {
+  $('#projectModalTitle').text(row ? '修改项目' : '新增项目');
+  $('#projectId').val(row ? row.id : '');
+  $('#projectName').val(row ? row.name : '');
+  $('#projectNote').val(row ? (row.note === '-' ? '' : row.note) : '');
+  new bootstrap.Modal(document.getElementById('projectModal')).show();
+}
+
+function openPlanModal(row = null) {
+  $('#planModalTitle').text(row ? '修改套餐' : '新增套餐');
+  $('#planId').val(row ? row.id : '');
+  $('#planName').val(row ? row.name : '');
+  $('#planBandwidth').val(row && row.bandwidth !== '-' ? row.bandwidth : '');
+  $('#planTraffic').val(row && row.traffic !== '-' ? row.traffic : '');
+  $('#planDays').val(row ? (row.days || 30) : 30);
+  $('#planNote').val(row ? (row.note === '-' ? '' : row.note) : '');
+  new bootstrap.Modal(document.getElementById('planModal')).show();
+}
+
+window.editCustomer = id => openCustomerModal(customers.find(x => x.id === id));
+window.editProject = id => openProjectModal(projects.find(x => x.id === id));
+window.editPlan = id => openPlanModal(plans.find(x => x.id === id));
+
+async function saveCustomer() {
+  const id = $('#customerId').val();
+  const data = { name: $('#customerName').val().trim(), note: $('#customerNote').val().trim() };
+  if (!data.name) return toast('客户必填', 'error');
+  const r = id ? await api.put(`/api/node-customers/${id}`, data) : await api.post('/api/node-customers', data);
+  if (!r.ok) return toast(r.error || '保存客户失败', 'error');
+  bootstrap.Modal.getInstance(document.getElementById('customerModal'))?.hide();
+  toast('客户已保存', 'success');
+  await loadCustomers();
+}
+
+async function saveProject() {
+  const id = $('#projectId').val();
+  const data = { name: $('#projectName').val().trim(), note: $('#projectNote').val().trim() };
+  if (!data.name) return toast('项目必填', 'error');
+  const r = id ? await api.put(`/api/projects/${id}`, data) : await api.post('/api/projects', data);
+  if (!r.ok) return toast(r.error || '保存项目失败', 'error');
+  bootstrap.Modal.getInstance(document.getElementById('projectModal'))?.hide();
+  toast('项目已保存', 'success');
+  await loadProjects();
+}
+
+async function savePlan() {
+  const id = $('#planId').val();
+  const data = {
+    name: $('#planName').val().trim(),
+    bandwidth: $('#planBandwidth').val().trim(),
+    traffic: $('#planTraffic').val().trim(),
+    days: $('#planDays').val(),
+    note: $('#planNote').val().trim(),
+  };
+  if (!data.name) return toast('套餐必填', 'error');
+  const r = id ? await api.put(`/api/plans/${id}`, data) : await api.post('/api/plans', data);
+  if (!r.ok) return toast(r.error || '保存套餐失败', 'error');
+  bootstrap.Modal.getInstance(document.getElementById('planModal'))?.hide();
+  toast('套餐已保存', 'success');
+  await loadPlans();
+}
+
+window.deleteCustomer = async function(id) {
+  if (!confirm('确定删除这个客户？')) return;
+  const r = await api.del(`/api/node-customers/${id}`);
+  if (!r.ok) return toast(r.error || '删除客户失败', 'error');
+  toast('客户已删除', 'success');
+  await loadCustomers();
+};
+
+window.deleteProject = async function(id) {
+  if (!confirm('确定删除这个项目？')) return;
+  const r = await api.del(`/api/projects/${id}`);
+  if (!r.ok) return toast(r.error || '删除项目失败', 'error');
+  toast('项目已删除', 'success');
+  await loadProjects();
+};
+
+window.deletePlan = async function(id) {
+  if (!confirm('确定删除这个套餐？')) return;
+  const r = await api.del(`/api/plans/${id}`);
+  if (!r.ok) return toast(r.error || '删除套餐失败', 'error');
+  toast('套餐已删除', 'success');
+  await loadPlans();
+};
+
+$(async () => {
+  await Promise.all([loadCustomers(), loadProjects(), loadPlans()]);
+  $('#btnNewCustomer').on('click', () => openCustomerModal());
+  $('#btnNewProject').on('click', () => openProjectModal());
+  $('#btnNewPlan').on('click', () => openPlanModal());
+  $('#btnSaveCustomer').on('click', saveCustomer);
+  $('#btnSaveProject').on('click', saveProject);
+  $('#btnSavePlan').on('click', savePlan);
+});
+</script>
+{% endblock %}

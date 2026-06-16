@@ -1,0 +1,1097 @@
+{% extends "base.html" %}
+{% block title %}节点列表 - 42IPwin{% endblock %}
+{% block content %}
+<div class="users-page">
+  <div class="page-header">
+    <h2><i class="bi bi-hdd-stack"></i> 节点列表</h2>
+  </div>
+
+  <div class="dash-metric-grid node-metric-grid mb-4">
+    <section class="dash-metric-card clickable" data-status-filter="all">
+      <div class="dash-metric-label">实例总数</div>
+      <div class="dash-metric-value blue" id="nodeStatTotal">0</div>
+    </section>
+    <section class="dash-metric-card clickable" data-status-filter="running">
+      <div class="dash-metric-label">运行中</div>
+      <div class="dash-metric-value green" id="nodeStatRunning">0</div>
+    </section>
+    <section class="dash-metric-card clickable" data-status-filter="stopped">
+      <div class="dash-metric-label">已停止</div>
+      <div class="dash-metric-value red" id="nodeStatStopped">0</div>
+    </section>
+    <section class="dash-metric-card clickable" data-status-filter="expired">
+      <div class="dash-metric-label">已到期</div>
+      <div class="dash-metric-value red" id="nodeStatExpired">0</div>
+    </section>
+  </div>
+
+  <div class="user-toolbar">
+    <div class="toolbar-actions">
+      <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#userModal" id="btnNewUser"><i class="bi bi-plus-lg"></i> 批量创建</button>
+      <button class="btn btn-soft" id="btnSync"><i class="bi bi-arrow-repeat"></i> 同步</button>
+      <button class="btn btn-danger" id="btnCleanExpired"><i class="bi bi-calendar-x"></i> 清理到期</button>
+      <button class="btn btn-warning" id="btnBatchStop"><i class="bi bi-pause-circle"></i> 批量停止</button>
+      <button class="btn btn-danger" id="btnBatchDelete"><i class="bi bi-trash3"></i> 批量删除</button>
+      <button class="btn btn-soft" id="btnAssignUser"><i class="bi bi-person-check"></i> 分配用户</button>
+      <button class="btn btn-soft" id="btnAssignProject"><i class="bi bi-folder-check"></i> 分配项目</button>
+      <button class="btn btn-soft" id="btnRenew"><i class="bi bi-calendar-plus"></i> 续费</button>
+      <button class="btn btn-soft" id="btnExport"><i class="bi bi-download"></i> 导出</button>
+    </div>
+    <div class="toolbar-search">
+      <textarea class="form-control search-multi" id="filterSearch" rows="1" placeholder="备注/项目/用户/协议/端口，支持一行一个批量搜索"></textarea>
+      <select class="form-select" id="filterProtocol">
+        <option value="">全部协议</option>
+        <option value="socks5">SK5</option>
+        <option value="http">HTTP</option>
+        <option value="ss">shadowsocks</option>
+        <option value="vless">VLESS</option>
+        <option value="trojan">Trojan</option>
+        <option value="hysteria2">Hysteria2</option>
+      </select>
+      <select class="form-select" id="pageSize">
+        <option value="20">20条</option>
+        <option value="50">50条</option>
+        <option value="100">100条</option>
+        <option value="500">500条</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="user-table-wrap">
+    <table class="user-table node-table">
+      <thead>
+        <tr>
+          <th class="check-col"><input class="form-check-input" type="checkbox" id="checkAll"></th>
+          <th>IP</th>
+          <th>备注</th>
+          <th>项目</th>
+          <th>用户</th>
+          <th>协议</th>
+          <th>连接数</th>
+          <th>端口</th>
+          <th>账号/加密</th>
+          <th>密码</th>
+          <th>带宽</th>
+          <th>流量</th>
+          <th>到期</th>
+          <th>测试</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="userTable"></tbody>
+    </table>
+  </div>
+
+  <div class="user-pagination">
+    <div class="page-summary" id="pageSummary">共 0 条</div>
+    <div class="page-controls">
+      <button class="mini-btn" id="btnFirstPage"><i class="bi bi-chevron-bar-left"></i></button>
+      <button class="mini-btn" id="btnPrevPage"><i class="bi bi-chevron-left"></i></button>
+      <span class="page-number" id="pageNumber">1 / 1</span>
+      <button class="mini-btn" id="btnNextPage"><i class="bi bi-chevron-right"></i></button>
+      <button class="mini-btn" id="btnLastPage"><i class="bi bi-chevron-bar-right"></i></button>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="userModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-centered">
+    <div class="modal-content modal-dark create-node-modal">
+      <div class="modal-header create-modal-head"><h5 class="modal-title">批量创建入站</h5><button class="btn btn-soft" data-bs-dismiss="modal">关闭</button></div>
+      <div class="modal-body"><form id="userForm"><div class="create-form-grid">
+        <div><label class="form-label">项目</label><select class="form-select" id="userProject" required></select></div>
+        <div><label class="form-label">节点分类</label><select class="form-select" id="userLine" required></select></div>
+        <div><label class="form-label">归属用户</label><input class="form-control" id="userOwner" list="ownerOptions" placeholder="输入用户名，可自动筛选"><datalist id="ownerOptions"></datalist></div>
+        <div><label class="form-label">协议</label><select class="form-select" id="userProtocol" required><option value="socks5">SOCKS</option><option value="http">HTTP</option><option value="ss">Shadowsocks</option><option value="vless">VLESS</option><option value="trojan">Trojan</option><option value="hysteria2">Hysteria2</option></select></div>
+        <div class="custom-port-wrap"><label class="form-label">自定义端口</label><input class="form-control" id="userCustomPort" type="number" min="1025" max="65535" placeholder="留空随机 20000-50000"></div>
+        <div><label class="form-label" id="accountLabel">协议账号</label><input class="form-control account-field" id="userUsername" placeholder="留空自动生成"><select class="form-select ss-method-field d-none" id="userSsMethod"><option value="aes-256-gcm">aes-256-gcm</option><option value="aes-128-gcm">aes-128-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option><option value="aes-256-cfb">aes-256-cfb</option><option value="aes-128-cfb">aes-128-cfb</option><option value="rc4-md5">rc4-md5</option></select></div>
+        <div><label class="form-label" id="passwordLabel">密码</label><input class="form-control" id="userPassword" placeholder="留空自动生成"></div>
+        <div><label class="form-label">限速</label><input class="form-control" id="userSpeedLimit" value="20mbit" placeholder="默认 20mbit"></div>
+        <div><label class="form-label">限制流量</label><input class="form-control" id="userTrafficLimit" value="130g" placeholder="默认 130g"></div>
+        <div class="expire-field">
+          <label class="form-label">到期时间</label>
+          <div class="expire-input-wrap">
+            <i class="bi bi-calendar3"></i>
+            <input class="form-control" id="userExpire" type="datetime-local">
+          </div>
+          <div class="expire-quick">
+            <button type="button" data-days="7">7天</button>
+            <button type="button" data-days="30" class="active">30天</button>
+            <button type="button" data-days="90">90天</button>
+          </div>
+        </div>
+        <div><label class="form-label">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"></div>
+        <div><label class="form-label">备注</label><input class="form-control" id="userNote" placeholder="写入 XUI 备注"></div>
+      </div></form></div>
+      <div class="modal-footer create-modal-footer"><div class="form-check form-switch skip-switch"><input class="form-check-input" type="checkbox" role="switch" id="userSkipExisting" checked><label class="form-check-label" for="userSkipExisting">跳过重复</label></div><button class="btn btn-primary create-submit" id="btnSaveUser">创建</button><button class="btn btn-soft" data-bs-dismiss="modal">取消</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="infoModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">节点信息</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="info-grid">
+          <section class="info-panel"><div class="info-panel-head"><span>入站信息</span><button type="button" class="mini-btn" onclick="copyInfoTarget('inboundBox', this)">复制</button></div><pre id="inboundBox" class="info-box"></pre></section>
+          <section class="info-panel"><div class="info-panel-head"><span>出站信息</span><button type="button" class="mini-btn" onclick="copyInfoTarget('outboundBox', this)">复制</button></div><pre id="outboundBox" class="info-box"></pre></section>
+          <section class="info-panel"><div class="info-panel-head"><span>链接输出</span><button type="button" class="mini-btn" onclick="copyInfoTarget('linkBox', this)">复制</button></div><pre id="linkBox" class="info-box"></pre></section>
+          <section class="info-panel"><div class="info-panel-head"><span>字段输出</span><button type="button" class="mini-btn" onclick="copyInfoTarget('fieldBox', this)">复制</button></div><pre id="fieldBox" class="info-box"></pre></section>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-soft" onclick="copyAllInfo(this)">复制全部</button>
+        <button class="btn btn-primary" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="testModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">节点测试结果</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body"><pre id="testResultBox" class="info-box"></pre></div>
+      <div class="modal-footer"><button class="btn btn-primary" data-bs-dismiss="modal">关闭</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="createResultModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-centered">
+    <div class="modal-content modal-dark create-result-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">批量创建结果</h5>
+        <button class="btn btn-soft" data-bs-dismiss="modal">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="create-result-summary" id="createResultSummary"></div>
+        <pre class="create-result-box" id="createResultBox"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnCopyCreateResult">一键复制</button>
+        <button class="btn btn-primary" id="btnDownloadCreateCsv">下载 CSV</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="batchStopModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">批量停止</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">IP / 批量创建结果</label>
+        <textarea class="form-control batch-textarea" id="batchStopText" rows="7" placeholder="可勾选节点，也可粘贴 IP、端口、账号、备注，或 IP|端口|账号|密码 这种批量创建结果"></textarea>
+        <div class="batch-match-hint" id="batchStopHint">已勾选 0 个，粘贴匹配 0 个</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-warning" id="btnConfirmBatchStop">开始停止</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="batchDeleteModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">批量删除</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">IP / 批量创建结果</label>
+        <textarea class="form-control batch-textarea" id="batchDeleteText" rows="7" placeholder="可勾选节点，也可粘贴 IP、端口、账号、备注，或 IP|端口|账号|密码 这种批量创建结果"></textarea>
+        <div class="batch-match-hint" id="batchDeleteHint">已勾选 0 个，粘贴匹配 0 个</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-danger" id="btnConfirmBatchDelete">开始删除</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="assignUserModal" tabindex="-1">
+  <div class="modal-dialog modal-md modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">批量分配用户</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">用户</label>
+        <input class="form-control" id="assignUserValue" list="assignOwnerOptions" placeholder="输入用户名，可自动筛选">
+        <datalist id="assignOwnerOptions"></datalist>
+        <div class="batch-match-hint" id="assignUserHint">已勾选 0 个节点</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnConfirmAssignUser">确认分配</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="assignProjectModal" tabindex="-1">
+  <div class="modal-dialog modal-md modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">批量分配项目</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">项目</label>
+        <select class="form-select" id="assignProjectValue"></select>
+        <div class="batch-match-hint" id="assignProjectHint">已勾选 0 个节点</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnConfirmAssignProject">确认分配</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="renewModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">批量续费</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">IP / 批量创建结果</label>
+        <textarea class="form-control batch-textarea" id="renewText" rows="7" placeholder="可粘贴 IP 列表，或 IP|端口|账号|密码|到期|创建成功 这种批量创建结果"></textarea>
+        <label class="form-label mt-3">续费天数</label>
+        <input class="form-control" id="renewDays" type="number" min="1" max="3650" value="30">
+        <div class="batch-match-hint" id="renewHint">已勾选 0 个，粘贴匹配 0 个</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnConfirmRenew">开始续费</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allUsers = [];
+let allLines = [];
+let allProjects = [];
+let allCustomers = [];
+let currentInfoText = '';
+let currentPage = 1;
+let statusFilter = "all";
+let lastCreateResultText = '';
+let lastCreateResultCsv = '';
+const PROTO_LABELS = { socks5: 'SK5', http: 'HTTP', ss: 'SS', vless: 'VLESS', trojan: 'Trojan', hysteria2: 'HY2' };
+
+async function loadLines() {
+  const r = await api.get('/api/lines');
+  if (!r.ok) return toast(r.error || '线路读取失败', 'error');
+  allLines = r.data || [];
+  const sel = $('#userLine').empty().append('<option value="">请选择IP</option><option value="all">全部IP</option>');
+  allLines.forEach(l => {
+    const marker = l.is_master ? ' 静默主网卡' : '';
+    sel.append(`<option value="${l.id}">${escapeHtml(l.public_ip)} ${escapeHtml(l.name || '')}${marker}</option>`);
+  });
+}
+
+async function loadProjects() {
+  const r = await api.get('/api/projects');
+  if (!r.ok) return;
+  allProjects = (r.data || []).filter(p => p.status !== 0);
+  const opts = ['<option value="">请选择项目</option>'].concat(
+    allProjects.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`)
+  );
+  $('#userProject,#assignProjectValue').html(opts.join(''));
+}
+
+async function loadCustomers() {
+  const r = await api.get('/api/node-customers');
+  if (!r.ok) return;
+  allCustomers = r.data || [];
+  refreshOwnerOptions();
+}
+
+function refreshOwnerOptions() {
+  const customerNames = allCustomers.map(c => c.name).filter(Boolean);
+  const nodeNames = allUsers.map(u => u.owner_name || u.username).filter(Boolean);
+  const names = [...new Set(customerNames.concat(nodeNames))].sort();
+  $('#ownerOptions').html(names.map(name => `<option value="${escapeHtml(name)}"></option>`).join(''));
+  $('#assignOwnerOptions').html(names.map(name => `<option value="${escapeHtml(name)}"></option>`).join(''));
+}
+
+async function loadUsers() {
+  const r = await api.get('/api/users');
+  if (!r.ok) return toast(r.error || '节点读取失败', 'error');
+  allUsers = r.data || [];
+  refreshOwnerOptions();
+  updateNodeStats();
+  currentPage = 1;
+  renderUsers();
+}
+
+function portFor(u) {
+  if (u.listen_port) return u.listen_port;
+  if (u.protocol === 'http') return u.http_port || ((u.socks_port || 0) + 10);
+  if (u.protocol === 'ss') return u.ss_port || ((u.socks_port || 0) + 20);
+  if (u.protocol === 'vless') return u.vless_port || ((u.line_id || 0) + 13000);
+  if (u.protocol === 'trojan') return u.trojan_port || ((u.line_id || 0) + 14000);
+  if (u.protocol === 'hysteria2') return u.hysteria2_port || ((u.line_id || 0) + 15000);
+  return u.socks_port || '';
+}
+
+function outputLine(u) {
+  const ip = u.line_ip || '';
+  const port = portFor(u);
+  const expire = formatDate(u.expire_at);
+  if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}|${expire}`;
+  return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
+}
+
+function protocolUri(u) {
+  const ip = u.line_ip || '';
+  const port = portFor(u);
+  if (u.protocol === 'vless') return `vless://${u.password}@${ip}:${port}?encryption=none&type=tcp#${encodeURIComponent(u.username || 'vless')}`;
+  if (u.protocol === 'trojan') return `trojan://${u.password}@${ip}:${port}?security=tls&allowInsecure=1&sni=${ip}#${encodeURIComponent(u.username || 'trojan')}`;
+  if (u.protocol === 'hysteria2') return `hysteria2://${u.password}@${ip}:${port}?insecure=1&sni=${ip}#${encodeURIComponent(u.username || 'hy2')}`;
+  if (u.protocol === 'http') return `http://${u.username || ''}:${u.password || ''}@${ip}:${port}`;
+  if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}`;
+  return `socks5://${u.username || ''}:${u.password || ''}@${ip}:${port}`;
+}
+
+function outputLines(rows) {
+  return (rows || []).map(outputLine).filter(Boolean);
+}
+
+async function copyRows(rows, label) {
+  const lines = outputLines(rows);
+  if (!lines.length) return;
+  const ok = await copyText(lines.join('\n'));
+  if (ok) toast(`${label || '节点信息'}已复制 ${lines.length} 条`, 'success', 3500);
+}
+
+function csvEscape(value) {
+  const text = String(value ?? '');
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function createResultCsv(rows) {
+  const header = ['IP', '端口', '账号/加密', '密码', '到期日期'];
+  const body = (rows || []).map(u => {
+    const ip = u.line_ip || '';
+    const port = portFor(u);
+    const account = u.protocol === 'ss' ? (u.ss_method || 'aes-256-gcm') : (u.username || '');
+    const password = u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || '');
+    return [ip, port, account, password, formatDate(u.expire_at)].map(csvEscape).join(',');
+  });
+  return [header.join(','), ...body].join('\n');
+}
+
+function showCreateResult(data) {
+  const rows = data.created || [];
+  const errors = data.errors || [];
+  const lines = outputLines(rows);
+  lastCreateResultText = lines.join('\n');
+  lastCreateResultCsv = createResultCsv(rows);
+  const summary = [];
+  if (rows.length) summary.push(`<div class="result-ok">成功 ${rows.length} 条</div>`);
+  if (errors.length) summary.push(`<div class="result-error">失败 ${errors.length} 条：</div><div class="result-errors">${errors.map(escapeHtml).join('<br>')}</div>`);
+  if (!rows.length && !errors.length) summary.push('<div class="text-muted">没有成功创建的入站。</div>');
+  $('#createResultSummary').html(summary.join(''));
+  $('#createResultBox').text(lines.length ? lines.join('\n') : '没有成功创建的入站。');
+  new bootstrap.Modal(document.getElementById('createResultModal')).show();
+}
+
+function downloadText(filename, text, mime = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function searchBlob(u) {
+  return [
+    u.line_ip,
+    String(portFor(u)),
+    u.note,
+    u.line_name,
+    u.username,
+    u.owner_name,
+    u.project_name,
+    PROTO_LABELS[u.protocol],
+    u.protocol,
+    u.password,
+    u.ss_password,
+    u.ss_method,
+    outputLine(u),
+    protocolUri(u),
+  ].map(v => String(v || '').toLowerCase()).join(' ');
+}
+
+function matchesStructuredTerm(u, term) {
+  const parts = String(term || '').toLowerCase().split('|').map(x => x.trim()).filter(Boolean);
+  if (!parts.length) return true;
+  const fields = [
+    String(u.line_ip || '').toLowerCase(),
+    String(portFor(u)).toLowerCase(),
+    String(u.protocol === 'ss' ? (u.ss_method || '') : (u.username || '')).toLowerCase(),
+    String(u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || '')).toLowerCase(),
+    String(formatDate(u.expire_at) || '').toLowerCase(),
+  ];
+  return parts.every((part, idx) => {
+    if (fields[idx] && fields[idx].includes(part)) return true;
+    return searchBlob(u).includes(part);
+  });
+}
+
+function matchedUsers() {
+  const raw = ($('#filterSearch').val() || '').trim().toLowerCase();
+  const terms = raw.split(/\n+/).map(x => x.trim()).filter(Boolean);
+  const proto = $('#filterProtocol').val();
+  let rows = allUsers;
+  if (proto) rows = rows.filter(u => u.protocol === proto);
+  if (statusFilter === 'running') rows = rows.filter(u => u.status && !isExpired(u));
+  if (statusFilter === 'stopped') rows = rows.filter(u => !u.status && !isExpired(u));
+  if (statusFilter === 'expired') rows = rows.filter(u => isExpired(u));
+  if (terms.length) {
+    rows = rows.filter(u => {
+      const hay = searchBlob(u);
+      return terms.some(term => term.includes('|') ? matchesStructuredTerm(u, term) : hay.includes(term));
+    });
+  }
+  return rows;
+}
+
+function pagedUsers() {
+  const rows = matchedUsers();
+  const size = parseInt($('#pageSize').val() || '20', 10);
+  const totalPages = Math.max(1, Math.ceil(rows.length / size));
+  currentPage = Math.min(Math.max(currentPage, 1), totalPages);
+  const start = (currentPage - 1) * size;
+  return { rows, pageRows: rows.slice(start, start + size), totalPages, start };
+}
+
+function updatePagination(meta) {
+  const total = meta.rows.length;
+  const from = total ? meta.start + 1 : 0;
+  const to = Math.min(meta.start + meta.pageRows.length, total);
+  $('#pageSummary').text(total ? `第 ${from}-${to} 条，共 ${total} 条` : '共 0 条');
+  $('#pageNumber').text(`${currentPage} / ${meta.totalPages}`);
+  $('#btnFirstPage, #btnPrevPage').prop('disabled', currentPage <= 1);
+  $('#btnNextPage, #btnLastPage').prop('disabled', currentPage >= meta.totalPages);
+}
+
+function formatDate(value) {
+  if (!value) return '永久';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function isExpired(u) { return u.expire_at && new Date(u.expire_at) < new Date(); }
+function nodeStatusOf(u) {
+  if (isExpired(u)) return { text: '到期', cls: 'expired', toggle: false };
+  if (!u.status) return { text: '停用', cls: 'off', toggle: true };
+  return { text: '启用', cls: 'on', toggle: true };
+}
+function maskPassword(value) { const text = String(value || ''); return text ? (text.length <= 8 ? '***' : text.slice(0, 6) + '***') : '-'; }
+
+function parseTrafficLimit(value) {
+  const text = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+  const m = text.match(/^(\d+(?:\.\d+)?)(b|kb|mb|gb|tb|kib|mib|gib|tib)?$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  const unit = m[2] || 'gb';
+  const map = { b: 1, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3, tb: 1000 ** 4, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4 };
+  return Math.max(0, Math.floor(n * (map[unit] || 1)));
+}
+
+function speedBadge(value) {
+  const text = String(value || '').trim();
+  if (!text) return '<div class="metric-pill metric-free"><i class="bi bi-infinity"></i><span>不限速</span></div>';
+  return `<div class="metric-pill metric-speed"><i class="bi bi-lightning-charge-fill"></i><span>${escapeHtml(text)}</span></div>`;
+}
+
+function trafficMeter(used, limitText) {
+  const limit = parseTrafficLimit(limitText);
+  if (!limit) {
+    return `<div class="traffic-meter"><div class="traffic-top"><strong>${formatBytes(used)}</strong><span>不限</span></div><div class="meter-track"><div class="meter-fill free" style="width:18%"></div></div><div class="traffic-limit">已用流量</div></div>`;
+  }
+  const pct = Math.min(100, Math.round((used / Math.max(limit, 1)) * 100));
+  const remain = Math.max(0, limit - used);
+  const level = pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : 'ok';
+  return `<div class="traffic-meter"><div class="traffic-top"><strong>剩余 ${formatBytes(remain)}</strong><span>${pct}%</span></div><div class="meter-track"><div class="meter-fill ${level}" style="width:${pct}%"></div></div><div class="traffic-limit">已用 ${formatBytes(used)} / 总 ${formatBytes(limit)}</div></div>`;
+}
+
+function trafficCell(u) {
+  if (!u.traffic_available) {
+    return `<div class="traffic-meter muted"><div class="traffic-top"><strong>未接入</strong><span>真实统计</span></div><div class="meter-track"><div class="meter-fill free" style="width:0"></div></div><div class="traffic-limit">${escapeHtml(u.traffic_source || 'sing-box 统计未接入')}</div></div>`;
+  }
+  const used = (u.bytes_in || 0) + (u.bytes_out || 0);
+  return trafficMeter(used, u.traffic_limit);
+}
+
+function renderUsers() {
+  const meta = pagedUsers();
+  const tb = $('#userTable').empty();
+  $('#checkAll').prop('checked', false);
+  updatePagination(meta);
+  if (!meta.pageRows.length) {
+    tb.append('<tr><td colspan="15" class="empty-cell">暂无节点</td></tr>');
+    return;
+  }
+  meta.pageRows.forEach(u => {
+    const state = nodeStatusOf(u);
+    const statusPill = state.toggle
+      ? `<button class="state-pill ${state.cls} clickable" onclick="toggleNodeStatus(${u.id})">${state.text}</button>`
+      : `<span class="state-pill ${state.cls}">${state.text}</span>`;
+    const account = u.protocol === 'ss' ? (u.ss_method || 'aes-256-gcm') : u.username;
+    const password = u.protocol === 'ss' ? (u.ss_password || u.password) : u.password;
+    tb.append(`
+      <tr>
+        <td class="check-col"><input class="form-check-input row-check" type="checkbox" value="${u.id}"></td>
+        <td><div class="ip-cell">${statusPill}<button class="ip-link js-goto-line" data-line-id="${u.line_id || 0}" data-ip="${escapeHtml(u.line_ip || '')}">${escapeHtml(u.line_ip || '-')}</button></div></td>
+        <td>${escapeHtml(u.note || '-')}</td>
+        <td>${escapeHtml(u.project_name || u.line_name || '-')}</td>
+        <td>${escapeHtml(u.owner_name || u.username || '-')}</td>
+        <td><span class="proto-pill">${escapeHtml(PROTO_LABELS[u.protocol] || u.protocol || '-')}</span></td>
+        <td><span class="port-pill">${escapeHtml(u.connections || 0)}</span></td>
+        <td>${escapeHtml(portFor(u))}</td>
+        <td>${escapeHtml(account || '-')}</td>
+        <td class="password-cell">${escapeHtml(maskPassword(password))}</td>
+        <td>${speedBadge(u.speed_limit)}</td>
+        <td>${trafficCell(u)}</td>
+        <td>${escapeHtml(formatDate(u.expire_at))}</td>
+        <td><button class="copy-btn test-btn" data-user-id="${u.id}" onclick="testUser(${u.id}, this)">一键测试</button></td>
+        <td class="line-actions">
+          <button class="mini-btn" onclick="copyNode(${u.id}, this)">复制</button>
+          <button class="mini-btn" onclick="showInfo(${u.id})">信息</button>
+          <button class="mini-btn danger" onclick="deleteNode(${u.id})">删除</button>
+        </td>
+      </tr>
+    `);
+  });
+}
+
+function selectedIds() { return $('.row-check:checked').map((_, el) => parseInt(el.value, 10)).get(); }
+function changePage(page) { currentPage = page; renderUsers(); }
+
+function parseBatchLines(text) {
+  return String(text || '')
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(Boolean);
+}
+
+function matchLineToIds(line) {
+  const rawParts = line.split('|').map(x => x.trim()).filter(Boolean);
+  const looseParts = line.split(/[\s,，]+/).map(x => x.trim()).filter(Boolean);
+  const parts = (rawParts.length > 1 ? rawParts : looseParts).map(x => x.toLowerCase());
+  const ip = parts.find(x => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(x));
+  const port = parts.find(x => /^\d{2,5}$/.test(x) && Number(x) > 0 && Number(x) <= 65535);
+
+  if (ip && port) {
+    return allUsers
+      .filter(u => String(u.line_ip || '').toLowerCase() === ip && String(portFor(u)) === port)
+      .map(u => u.id);
+  }
+
+  if (rawParts.length >= 3) {
+    const account = String(rawParts[2] || '').toLowerCase();
+    const password = String(rawParts[3] || '').toLowerCase();
+    return allUsers
+      .filter(u => {
+        const accountFields = [u.username, u.ss_method].map(v => String(v || '').toLowerCase());
+        const passwordFields = [u.password, u.ss_password].map(v => String(v || '').toLowerCase());
+        return (!ip || String(u.line_ip || '').toLowerCase() === ip)
+          && (!account || accountFields.includes(account))
+          && (!password || passwordFields.includes(password));
+      })
+      .map(u => u.id);
+  }
+
+  const token = parts[0];
+  if (!token) return [];
+  return allUsers
+    .filter(u => [
+      u.line_ip,
+      String(portFor(u)),
+      u.username,
+      u.password,
+      u.ss_password,
+      u.note,
+      u.owner_name,
+      u.project_name,
+    ].map(v => String(v || '').toLowerCase()).includes(token))
+    .map(u => u.id);
+}
+
+function idsFromText(text) {
+  const ids = [];
+  parseBatchLines(text).forEach(line => ids.push(...matchLineToIds(line)));
+  return [...new Set(ids)];
+}
+
+function combinedIds(textSelector) {
+  const checked = selectedIds();
+  const pasted = idsFromText($(textSelector).val());
+  return [...new Set(checked.concat(pasted))];
+}
+
+function setBatchHint(hintSelector, textSelector = null) {
+  const checked = selectedIds().length;
+  const pasted = textSelector ? idsFromText($(textSelector).val()).length : 0;
+  const total = textSelector ? combinedIds(textSelector).length : checked;
+  $(hintSelector).text(textSelector ? `已勾选 ${checked} 个，粘贴匹配 ${pasted} 个，合计 ${total} 个` : `已勾选 ${checked} 个节点`);
+}
+
+function openBatchDeleteModal() {
+  $('#batchDeleteText').val('');
+  setBatchHint('#batchDeleteHint', '#batchDeleteText');
+  new bootstrap.Modal(document.getElementById('batchDeleteModal')).show();
+}
+
+function openBatchStopModal() {
+  $('#batchStopText').val('');
+  setBatchHint('#batchStopHint', '#batchStopText');
+  new bootstrap.Modal(document.getElementById('batchStopModal')).show();
+}
+
+function openAssignUserModal() {
+  if (!selectedIds().length) return toast('请先勾选要分配的节点', 'error');
+  $('#assignUserValue').val('');
+  setBatchHint('#assignUserHint');
+  new bootstrap.Modal(document.getElementById('assignUserModal')).show();
+}
+
+function openAssignProjectModal() {
+  if (!selectedIds().length) return toast('请先勾选要分配的节点', 'error');
+  $('#assignProjectValue').val('');
+  setBatchHint('#assignProjectHint');
+  new bootstrap.Modal(document.getElementById('assignProjectModal')).show();
+}
+
+function openRenewModal() {
+  $('#renewText').val('');
+  $('#renewDays').val(30);
+  setBatchHint('#renewHint', '#renewText');
+  new bootstrap.Modal(document.getElementById('renewModal')).show();
+}
+
+function expireDateFromDays(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Math.max(1, parseInt(days || '30', 10)));
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function compactDateFromDays(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + Math.max(1, parseInt(days || '30', 10)));
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+}
+
+function compactDateFromInput(value) {
+  const text = (value || '').trim();
+  const m = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}${m[2]}${m[3]}`;
+  const compact = text.match(/^(\d{8})/);
+  return compact ? compact[1] : compactDateFromDays(30);
+}
+
+function syncDefaultAccountPassword(force = false) {
+  const dateValue = compactDateFromInput($('#userExpire').val());
+  const proto = $('#userProtocol').val();
+  if (proto !== 'ss' && (force || !$('#userUsername').val().trim())) $('#userUsername').val(dateValue);
+  if (force || !$('#userPassword').val().trim()) $('#userPassword').val(dateValue);
+}
+
+function applyCustomerNote() {
+  const name = ($('#userOwner').val() || '').trim();
+  const customer = allCustomers.find(c => c.name === name);
+  if (customer && customer.note && customer.note !== '-') {
+    $('#userNote').val(customer.note);
+  }
+}
+
+function resetForm() {
+  $('#userUsername,#userPassword').val('');
+  $('#userCustomPort,#userNote,#userOwner').val('');
+  $('#userSpeedLimit').val('20mbit');
+  $('#userTrafficLimit').val('130g');
+  $('#userExpire').val(expireDateFromDays(30));
+  $('.expire-quick button').removeClass('active');
+  $('.expire-quick button[data-days="30"]').addClass('active');
+  $('#userProject').val('');
+  $('#userProtocol').val('socks5').trigger('change');
+  $('#userLine').val('all');
+  $('#userCount').val(1);
+  $('#userSkipExisting').prop('checked', true);
+  syncDefaultAccountPassword(true);
+}
+
+async function saveUser() {
+  const saveBtn = $('#btnSaveUser');
+  if (saveBtn.prop('disabled')) return;
+  const oldText = saveBtn.text();
+  saveBtn.prop('disabled', true).text('创建中...');
+  const proto = $('#userProtocol').val();
+  syncDefaultAccountPassword(false);
+  const expireValue = ($('#userExpire').val() || '').trim();
+  const defaultCredential = compactDateFromInput(expireValue);
+  const data = {
+    username: proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential),
+    owner_name: $('#userOwner').val().trim() || (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential)),
+    project_name: $('#userProject').val().trim(),
+    password: $('#userPassword').val().trim() || defaultCredential,
+    protocol: proto,
+    ss_method: proto === 'ss' ? $('#userSsMethod').val() : null,
+    ss_password: proto === 'ss' ? ($('#userPassword').val().trim() || defaultCredential) : null,
+    line_id: $('#userLine').val(),
+    custom_port: $('#userCustomPort').val() || null,
+    speed_limit: $('#userSpeedLimit').val().trim(),
+    traffic_limit: $('#userTrafficLimit').val().trim(),
+    expire_at: expireValue || null,
+    count: parseInt($('#userCount').val() || '1', 10),
+    skip_existing: $('#userSkipExisting').prop('checked'),
+    note: $('#userNote').val().trim(),
+  };
+  try {
+    if (!data.line_id) return toast('请选择IP', 'error');
+    if (!data.project_name) return toast('请选择项目', 'error');
+    const r = await api.post('/api/users', data);
+    if (!r.ok) return toast(r.error || '创建失败', 'error', 6000);
+    const limitQueued = r.data.limit_queued || 0;
+    toast(`创建成功 ${r.data.created_count || 0} 个节点${limitQueued ? `，${limitQueued} 个限速后台下发中` : ''}`, 'success', 4500);
+    bootstrap.Modal.getInstance(document.getElementById('userModal')).hide();
+    showCreateResult(r.data || {});
+    await loadUsers();
+  } finally {
+    saveBtn.prop('disabled', false).text(oldText);
+  }
+}
+
+async function syncUsers() {
+  const r = await api.post('/api/users/sync');
+  if (!r.ok) return toast(r.error || '同步失败', 'error');
+  const disabled = (r.data.disabled || []).length;
+  const expired = (r.data.expired || []).length;
+  const parts = [];
+  if (expired) parts.push(`到期停用 ${expired} 个`);
+  if (disabled) parts.push(`超流量停用 ${disabled} 个`);
+  toast(parts.length ? `已同步，${parts.join('，')}` : '已同步所有协议和限速', 'success');
+  await loadUsers();
+}
+
+async function cleanExpired() {
+  if (!confirm('确定删除所有到期节点？')) return;
+  const r = await api.post('/api/users/clean-expired');
+  if (!r.ok) return toast(r.error || '清理失败', 'error');
+  toast(`已删除 ${r.data.deleted || 0} 个到期节点`, 'success');
+  await loadUsers();
+}
+
+async function batchDelete() {
+  const ids = combinedIds('#batchDeleteText');
+  if (!ids.length) return toast('请勾选节点，或在文本框粘贴要删除的 IP/端口/账号', 'error');
+  if (!confirm(`确定删除 ${ids.length} 个节点？`)) return;
+  const r = await api.post('/api/users/batch-delete', { ids });
+  if (!r.ok) return toast(r.error || '批量删除失败', 'error');
+  toast(`已删除 ${r.data.deleted || 0} 个节点`, 'success');
+  bootstrap.Modal.getInstance(document.getElementById('batchDeleteModal'))?.hide();
+  await loadUsers();
+}
+
+async function deleteNode(id) {
+  if (!confirm('确定删除这个节点？')) return;
+  const r = await api.del(`/api/users/${id}`);
+  if (!r.ok) return toast(r.error || '删除失败', 'error');
+  toast('已删除节点', 'success');
+  await loadUsers();
+}
+
+async function assignUser() {
+  const ids = selectedIds();
+  if (!ids.length) return toast('请选择节点', 'error');
+  const owner = $('#assignUserValue').val().trim();
+  if (!owner) return;
+  const r = await api.post('/api/users/batch-assign-user', { ids, owner_name: owner });
+  if (!r.ok) return toast(r.error || '分配用户失败', 'error');
+  toast(`已分配 ${r.data.updated || 0} 个节点`, 'success');
+  bootstrap.Modal.getInstance(document.getElementById('assignUserModal'))?.hide();
+  await loadUsers();
+}
+
+async function batchStop() {
+  const ids = combinedIds('#batchStopText');
+  if (!ids.length) return toast('请勾选节点，或在文本框粘贴要停止的 IP/端口/账号', 'error');
+  if (!confirm(`确定停止 ${ids.length} 个节点？`)) return;
+  const r = await api.post('/api/users/batch-stop', { ids });
+  if (!r.ok) return toast(r.error || '批量停止失败', 'error');
+  toast(`已停止 ${r.data.updated || 0} 个节点`, 'success');
+  bootstrap.Modal.getInstance(document.getElementById('batchStopModal'))?.hide();
+  await loadUsers();
+}
+
+async function assignProject() {
+  const ids = selectedIds();
+  if (!ids.length) return toast('请选择节点', 'error');
+  const project = $('#assignProjectValue').val();
+  if (!project) return;
+  const r = await api.post('/api/users/batch-assign-project', { ids, project_name: project });
+  if (!r.ok) return toast(r.error || '分配项目失败', 'error');
+  toast(`已分配 ${r.data.updated || 0} 个节点`, 'success');
+  bootstrap.Modal.getInstance(document.getElementById('assignProjectModal'))?.hide();
+  await loadUsers();
+}
+
+async function renewNodes() {
+  const ids = combinedIds('#renewText');
+  if (!ids.length) return toast('请勾选节点，或在文本框粘贴要续费的 IP/端口/账号', 'error');
+  const days = parseInt($('#renewDays').val() || '30', 10);
+  const r = await api.post('/api/users/batch-renew', { ids, days });
+  if (!r.ok) return toast(r.error || '续费失败', 'error');
+  toast(`已续费 ${r.data.updated || 0} 个节点`, 'success');
+  bootstrap.Modal.getInstance(document.getElementById('renewModal'))?.hide();
+  const renewed = r.data.users || [];
+  await loadUsers();
+  await copyRows(renewed, '续费结果');
+}
+
+function updateNodeStats() {
+  const total = allUsers.length;
+  const expired = allUsers.filter(isExpired).length;
+  const running = allUsers.filter(u => u.status && !isExpired(u)).length;
+  const stopped = allUsers.filter(u => !u.status && !isExpired(u)).length;
+  $('#nodeStatTotal').text(total);
+  $('#nodeStatRunning').text(running);
+  $('#nodeStatStopped').text(stopped);
+  $('#nodeStatExpired').text(expired);
+}
+
+function exportText() {
+  const ids = selectedIds();
+  const source = ids.length ? allUsers.filter(u => ids.includes(u.id)) : matchedUsers();
+  const rows = source.map(outputLine);
+  if (!rows.length) return toast('没有可导出的数据', 'error');
+  const proto = $('#filterProtocol').val() || 'all';
+  downloadText(`${proto}-proxy.txt`, rows.join('\n'));
+}
+
+async function copyNode(id, btn) {
+  const u = allUsers.find(x => x.id === id);
+  const ok = await copyText(u ? outputLine(u) : '');
+  if (ok && btn) {
+    const old = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = old; }, 1000);
+  }
+}
+
+async function toggleNodeStatus(id) {
+  const r = await api.post(`/api/users/${id}/toggle`, {});
+  if (!r.ok) return toast(r.error || '切换节点状态失败', 'error');
+  await loadUsers();
+}
+
+function gotoLine(lineId, ip) {
+  const params = new URLSearchParams();
+  if (lineId) params.set('line_id', lineId);
+  if (ip) params.set('ip', ip);
+  location.href = `/lines?${params.toString()}`;
+}
+
+function formatInfoBlock(lines) { return lines.map(([k, v]) => `${k}: ${v ?? '-'}`).join('\n'); }
+
+function formatTestResult(data) {
+  const speed = data.speedtest || {};
+  const bw = data.bandwidth || {};
+  const client = speed.client || {};
+  const limit = data.limit || {};
+  return [
+    `节点: ${data.ip}:${data.port}`,
+    `协议: ${PROTO_LABELS[data.protocol] || data.protocol}`,
+    `状态: ${data.ok ? '正常' : '异常'}`,
+    `TCP: ${(data.tcp || {}).message || '-'}`,
+    `UDP: ${(data.udp || {}).message || '-'}`,
+    `限速: ${limit.enabled ? `${limit.mbps} Mbps / ${limit.policy_ok ? '策略已下发' : '策略下发失败'}` : '未设置'}`,
+    `Fast测速: ${speed.mbps != null ? `${speed.mbps} Mbps` : (data.speed_error || '该协议暂不支持 Fast 自动测速')}`,
+    limit.self_test_bypassed ? `说明: ${limit.message}` : null,
+    speed.mbps != null ? `测速连接: ${speed.connections} 并发 / ${speed.seconds} 秒` : null,
+    client.ip ? `测速出口: ${client.ip} / ${client.isp || '-'}` : null,
+    `网卡链路: ${bw.speed || '未知'}`,
+    `当前流量: 下行 ${bw.rx || '0 B/s'} / 上行 ${bw.tx || '0 B/s'}`,
+  ].filter(Boolean).join('\n');
+}
+
+async function testUser(id, btn, showModal = true) {
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '测试中'; }
+  const r = await api.post(`/api/users/${id}/test`, {});
+  if (btn) btn.disabled = false;
+  if (!r.ok) {
+    if (btn) btn.textContent = old || '测试';
+    return toast(r.error || '测试失败', 'error', 4000);
+  }
+  const data = r.data || {};
+  const speed = data.speedtest || null;
+  if (btn) {
+    btn.classList.toggle('test-ok', !!data.ok);
+    btn.classList.toggle('test-warn', !data.ok);
+    btn.textContent = speed && speed.mbps != null ? `${speed.mbps}M` : data.ok ? '正常' : '异常';
+    btn.title = formatTestResult(data);
+  }
+  $('#testResultBox').text(formatTestResult(data));
+  toast(`${data.ip}:${data.port} ${speed && speed.mbps != null ? `Fast ${speed.mbps} Mbps` : data.summary || ''}`, data.ok ? 'success' : 'error', 6500);
+  if (showModal) new bootstrap.Modal(document.getElementById('testModal')).show();
+  return data;
+}
+
+async function testVisibleUsers() {
+  const buttons = $('.test-btn').toArray();
+  if (!buttons.length) return toast('本页没有可测试节点', 'error');
+  toast(`开始测试本页 ${buttons.length} 个节点`, 'info', 2500);
+  for (const btn of buttons) {
+    await testUser(parseInt(btn.dataset.userId, 10), btn, false);
+  }
+  toast('本页测试完成', 'success');
+}
+
+async function showInfo(id) {
+  const u = allUsers.find(x => x.id === id);
+  if (!u) return;
+  const r = await api.get(`/api/users/${id}/connection-info`);
+  if (!r.ok) return toast(r.error || '读取信息失败', 'error');
+  const info = r.data || {};
+  const inbound = info.inbound || {};
+  const outbound = info.outbound || {};
+  const inboundText = formatInfoBlock([
+    ['协议', PROTO_LABELS[inbound.protocol] || inbound.protocol],
+    ['地址', inbound.address],
+    ['端口', inbound.port],
+    ['账号/加密', inbound.username],
+    ['密码/UUID', inbound.password],
+    ['UDP', inbound.udp ? '开启' : '关闭'],
+  ]);
+  const outboundText = formatInfoBlock([
+    ['协议', outbound.protocol || 'freedom'],
+    ['目标', outbound.target || '直连'],
+    ['账号', outbound.username || '-'],
+    ['密码', outbound.password || '-'],
+    ['出站IP', outbound.outbound_ip || u.line_ip || '-'],
+  ]);
+  const linkText = info.uri || outputLine(u) || '-';
+  const fieldText = info.field || outputLine(u) || '-';
+  $('#inboundBox').text(inboundText);
+  $('#outboundBox').text(outboundText);
+  $('#linkBox').text(linkText);
+  $('#fieldBox').text(fieldText);
+  currentInfoText = [inboundText, outboundText, linkText, fieldText].join('\n\n');
+  new bootstrap.Modal(document.getElementById('infoModal')).show();
+}
+
+async function flashCopyButton(btn, ok, text) {
+  if (!btn || !ok) return;
+  const old = btn.textContent;
+  btn.textContent = text || '已复制';
+  setTimeout(() => { btn.textContent = old; }, 1200);
+}
+
+window.copyInfoTarget = async function(targetId, btn) {
+  const el = document.getElementById(targetId);
+  flashCopyButton(btn, await copyText(el ? el.textContent : ''));
+};
+
+window.copyAllInfo = async function(btn) {
+  const text = currentInfoText || ['inboundBox', 'outboundBox', 'linkBox', 'fieldBox'].map(id => (document.getElementById(id) || {}).textContent || '').filter(Boolean).join('\n\n');
+  flashCopyButton(btn, await copyText(text), '已复制全部');
+};
+
+$(async () => {
+  await Promise.all([loadLines(), loadProjects(), loadUsers(), loadCustomers()]);
+  $('#btnNewUser').on('click', resetForm);
+  $('#btnSaveUser').on('click', saveUser);
+  $('#btnCopyCreateResult').on('click', () => copyText(lastCreateResultText));
+  $('#btnDownloadCreateCsv').on('click', () => {
+    if (!lastCreateResultCsv) return toast('没有可下载的创建结果', 'error');
+    downloadText('create-result.csv', lastCreateResultCsv, 'text/csv;charset=utf-8');
+  });
+  $('#btnSync').on('click', syncUsers);
+  $('#btnTestVisible').on('click', testVisibleUsers);
+  $('#btnCleanExpired').on('click', cleanExpired);
+  $('#btnBatchStop').on('click', openBatchStopModal);
+  $('#btnBatchDelete').on('click', openBatchDeleteModal);
+  $('#btnAssignUser').on('click', openAssignUserModal);
+  $('#btnAssignProject').on('click', openAssignProjectModal);
+  $('#btnRenew').on('click', openRenewModal);
+  $('#btnConfirmBatchDelete').on('click', batchDelete);
+  $('#btnConfirmBatchStop').on('click', batchStop);
+  $('#btnConfirmAssignUser').on('click', assignUser);
+  $('#btnConfirmAssignProject').on('click', assignProject);
+  $('#btnConfirmRenew').on('click', renewNodes);
+  $('#batchDeleteText').on('input', () => setBatchHint('#batchDeleteHint', '#batchDeleteText'));
+  $('#batchStopText').on('input', () => setBatchHint('#batchStopHint', '#batchStopText'));
+  $('#renewText').on('input', () => setBatchHint('#renewHint', '#renewText'));
+  $('#btnExport').on('click', exportText);
+  $('#filterSearch, #filterProtocol').on('input change', () => { currentPage = 1; renderUsers(); });
+  $('#userExpire').on('input change', () => {
+    $('.expire-quick button').removeClass('active');
+    syncDefaultAccountPassword(false);
+  });
+  $('#userOwner').on('input change', applyCustomerNote);
+  $('.node-metric-grid .dash-metric-card').on('click', function() { statusFilter = $(this).data('status-filter') || 'all'; currentPage = 1; renderUsers(); document.querySelector('.user-table-wrap').scrollIntoView({behavior:'smooth', block:'start'}); });
+  $('#pageSize').on('change', () => { currentPage = 1; renderUsers(); });
+  $('#btnFirstPage').on('click', () => changePage(1));
+  $('#btnPrevPage').on('click', () => changePage(currentPage - 1));
+  $('#btnNextPage').on('click', () => changePage(currentPage + 1));
+  $('#btnLastPage').on('click', () => changePage(pagedUsers().totalPages));
+  $('#checkAll').on('change', function() { $('.row-check').prop('checked', this.checked); setBatchHint('#batchDeleteHint', '#batchDeleteText'); setBatchHint('#batchStopHint', '#batchStopText'); setBatchHint('#renewHint', '#renewText'); setBatchHint('#assignUserHint'); setBatchHint('#assignProjectHint'); });
+  $('#userTable').on('change', '.row-check', () => { setBatchHint('#batchDeleteHint', '#batchDeleteText'); setBatchHint('#batchStopHint', '#batchStopText'); setBatchHint('#renewHint', '#renewText'); setBatchHint('#assignUserHint'); setBatchHint('#assignProjectHint'); });
+  $('#userTable').on('click', '.js-goto-line', function() { gotoLine(Number($(this).data('line-id') || 0), String($(this).data('ip') || '')); });
+  $('.expire-quick').on('click', 'button', function() {
+    const days = $(this).data('days');
+    $('.expire-quick button').removeClass('active');
+    $(this).addClass('active');
+    $('#userExpire').val(expireDateFromDays(days));
+    syncDefaultAccountPassword(true);
+  });
+  $('#btnGenPwd').on('click', async () => {
+    const kind = $('#userProtocol').val() === 'vless' ? 'uuid' : '';
+    const r = await api.get(`/api/users/gen-password${kind ? '?kind=uuid' : ''}`);
+    if (r.ok) $('#userPassword').val(r.data);
+  });
+  $('#userProtocol').on('change', function() {
+    const proto = $(this).val();
+    const isSs = proto === 'ss';
+    $('.account-field').toggleClass('d-none', isSs);
+    $('.ss-method-field').toggleClass('d-none', !isSs);
+    $('.custom-port-wrap').toggle(['socks5', 'http', 'ss'].includes(proto));
+    $('#accountLabel').text(isSs ? '加密方式' : '账号');
+    $('#passwordLabel').text(proto === 'vless' ? 'UUID' : '密码');
+    $('#userUsername').attr('placeholder', '默认使用到期日期');
+    $('#userPassword').attr('placeholder', '默认使用到期日期');
+    syncDefaultAccountPassword(false);
+  }).trigger('change');
+});
+</script>
+{% endblock %}

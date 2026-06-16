@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}仪表盘 - 42IPwin{% endblock %}
+{% block content %}
+<div class="dash-home">
+  <div class="dash-welcome">欢迎，系统管理员</div>
+
+  <div class="card-dark mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h5 class="mb-0">探针监控</h5>
+      <span class="text-muted small" id="probeTime">-</span>
+    </div>
+    <div class="probe-grid">
+      <div class="probe-item probe-cpu"><span>CPU</span><strong id="probeCpu">-</strong></div>
+      <div class="probe-item probe-mem"><span>内存</span><strong id="probeMemory">-</strong></div>
+      <div class="probe-item probe-conn"><span>连接数</span><strong id="probeConnections">-</strong></div>
+      <div class="probe-item probe-band"><span>实时带宽</span><strong id="probeBandwidth">-</strong></div>
+      <div class="probe-item probe-traffic"><span>系统总网卡</span><strong id="probeTraffic">-</strong></div>
+      <div class="probe-item probe-disk"><span>硬盘</span><strong id="probeDisk">-</strong></div>
+    </div>
+  </div>
+
+  <div class="card-dark mb-4">
+    <h5>节点流量趋势</h5>
+    <div id="chartTraffic" style="height: 320px;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let trafficChart;
+
+async function loadOverview() {
+  const r = await api.get('/api/stats/overview');
+  if (!r.ok) return;
+  const d = r.data || {};
+
+  const hours = (d.trend_hours || []).map(h => h.slice(11) + ':00');
+  const delta = arr => (arr || []).map((v, i, a) => i === 0 ? 0 : Math.max(0, (v || 0) - (a[i - 1] || 0)));
+  const trendIn = delta(d.trend_in);
+  const trendOut = delta(d.trend_out);
+  trafficChart.setOption({
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['入站', '出站'], textStyle: { color: '#8b949e' } },
+    xAxis: { type: 'category', data: hours, axisLabel: { color: '#8b949e' } },
+    yAxis: { type: 'value', axisLabel: { color: '#8b949e', formatter: v => formatBytes(v) } },
+    series: [
+      { name: '入站', type: 'line', smooth: true, data: trendIn, itemStyle: { color: '#4ea1ff' }, areaStyle: { opacity: 0.16 } },
+      { name: '出站', type: 'line', smooth: true, data: trendOut, itemStyle: { color: '#22c979' }, areaStyle: { opacity: 0.14 } },
+    ],
+    grid: { left: 70, right: 20, top: 40, bottom: 40 }
+  });
+
+}
+
+async function loadProbe() {
+  const r = await api.get('/api/probe');
+  if (!r.ok) return;
+  const d = r.data || {};
+  const diskText = disk => disk ? `${disk.percent}% / ${formatBytes(disk.used)} / ${formatBytes(disk.total)}` : '-';
+  const disks = [];
+  if (d.disk_system) disks.push(`系统 ${diskText(d.disk_system)}`);
+  if (d.disk_project && (!d.disk_system || d.disk_project.path !== d.disk_system.path)) disks.push(`项目 ${diskText(d.disk_project)}`);
+  $('#probeCpu').text(`${d.cpu_percent}%`);
+  $('#probeMemory').text(`${formatBytes(d.memory_used)} / ${formatBytes(d.memory_total)} (${d.memory_percent}%)`);
+  $('#probeConnections').text(d.connections);
+  $('#probeBandwidth').text(`下 ${formatBytes(d.net_rx_bps)}/s 上 ${formatBytes(d.net_tx_bps)}/s`);
+  $('#probeTraffic').text(`下 ${formatBytes(d.net_bytes_recv)} 上 ${formatBytes(d.net_bytes_sent)}`);
+  $('#probeDisk').text(disks.join(' | ') || `${d.disk_percent}% / ${formatBytes(d.disk_used)} / ${formatBytes(d.disk_total)}`);
+  $('#probeTime').text(d.time || '');
+}
+
+$(async () => {
+  trafficChart = echarts.init(document.getElementById('chartTraffic'));
+  window.addEventListener('resize', () => trafficChart.resize());
+  await Promise.all([loadOverview(), loadProbe()]);
+  setInterval(loadOverview, 30000);
+  setInterval(loadProbe, 5000);
+});
+</script>
+{% endblock %}

@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}线路管理 - 42IPwin{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2><i class="bi bi-diagram-3"></i> 线路管理</h2>
+  <div class="line-head-actions">
+    <button class="btn btn-outline-info btn-sm" id="btnSyncLines"><i class="bi bi-arrow-clockwise"></i> 更新列表</button>
+    <button class="btn btn-soft btn-sm" id="btnAddAdapter"><i class="bi bi-plus-circle"></i> 添加虚拟网卡</button>
+    <button class="btn btn-soft btn-sm" id="btnEditInternalIp"><i class="bi bi-pencil-square"></i> 一键配置内网IP</button>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3 col-sm-6"><div class="stat-card"><div class="stat-label"><i class="bi bi-globe"></i> 检测 IP</div><div class="stat-value" id="statDetected">0</div><div class="stat-extra">本机公网候选</div></div></div>
+  <div class="col-md-3 col-sm-6"><div class="stat-card"><div class="stat-label"><i class="bi bi-diagram-3"></i> 线路数量</div><div class="stat-value" id="statLines">0</div><div class="stat-extra">已添加线路</div></div></div>
+  <div class="col-md-3 col-sm-6"><div class="stat-card"><div class="stat-label"><i class="bi bi-check-circle"></i> 启用线路</div><div class="stat-value" id="statActive">0</div><div class="stat-extra">不含主网卡</div></div></div>
+  <div class="col-md-3 col-sm-6"><div class="stat-card"><div class="stat-label"><i class="bi bi-hdd-stack"></i> 节点数量</div><div class="stat-value" id="statNodes">0</div><div class="stat-extra">全部线路节点</div></div></div>
+</div>
+
+<div class="line-table-wrap">
+  <table class="line-table ops-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>线路名</th>
+        <th>公网 IP</th>
+        <th>内网 IP</th>
+        <th>MAC</th>
+        <th>网卡</th>
+        <th>连接数</th>
+        <th>节点数量</th>
+        <th>实时带宽</th>
+        <th>流量</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="lineTable"></tbody>
+  </table>
+</div>
+
+<div class="modal fade" id="adapterModal" tabindex="-1">
+  <div class="modal-dialog modal-md modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">添加虚拟网卡</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">每个主网卡创建数量</label>
+        <input class="form-control" id="adapterCount" type="number" min="1" max="200" value="13">
+        <div class="form-hint mt-2">例如填 13，会在每个主网卡下面各创建 13 个虚拟 MAC 网卡。</div>
+        <label class="form-label mt-3">指定主网卡</label>
+        <select class="form-select" id="adapterParent">
+          <option value="">读取中...</option>
+        </select>
+        <div class="form-hint mt-2" id="adapterParentHint">只能选择系统检测到的真实主网卡。</div>
+        <label class="form-label mt-3">掩码</label>
+        <input class="form-control" id="adapterPrefix" type="number" min="1" max="32" value="24">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveAdapter">创建</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="internalIpModal" tabindex="-1">
+  <div class="modal-dialog modal-md modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">更改内网 IP</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">内网网段</label>
+        <input class="form-control" id="internalBase" value="10.42" placeholder="例如 10.42">
+        <div class="form-hint mt-2">系统会给所有线路自动分配内网 IP，例如 10.42.5.1、10.42.5.2，无法识别主网卡编号时使用 10.42.9.x。</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveInternalIp">一键配置</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allLines = [];
+let masterInterfaces = [];
+let adapterModal;
+let internalIpModal;
+
+function speedText(rx, tx) {
+  return `下 ${formatBytes(rx || 0)}/s<br>上 ${formatBytes(tx || 0)}/s`;
+}
+
+function trafficText(bytesIn, bytesOut) {
+  return `入 ${formatBytes(bytesIn || 0)}<br>出 ${formatBytes(bytesOut || 0)}`;
+}
+
+function mainBadge(line) {
+  if (!line.parent_adapter) return '';
+  const label = line.is_master ? '主网卡静默' : line.parent_adapter;
+  const cls = line.is_master ? 'master-badge' : 'parent-badge';
+  return `<span class="${cls}">${escapeHtml(label)}</span>`;
+}
+
+function loadSystemInfo() {
+  $('#statDetected').text(allLines.filter(x => x.public_ip).length);
+  $('#statLines').text(allLines.length);
+  $('#statActive').text(allLines.filter(x => x.status && !x.is_master).length);
+  $('#statNodes').text(allLines.reduce((sum, x) => sum + (x.node_count || 0), 0));
+}
+
+async function loadLines() {
+  const r = await api.get('/api/lines');
+  if (!r.ok) return toast(r.error || '线路读取失败', 'error');
+  allLines = r.data || [];
+  loadSystemInfo();
+  const tb = $('#lineTable').empty();
+  if (!allLines.length) {
+    tb.append('<tr><td colspan="11" class="empty-cell">暂无线路，点击“更新列表”从网卡读取 IP</td></tr>');
+    return;
+  }
+  allLines.forEach(l => {
+    const ops = l.is_master
+      ? '<span class="state-pill off">静默</span>'
+      : `<button class="mini-btn" onclick="changeMac(${l.id})">一键更换MAC</button><button class="mini-btn danger" onclick="deleteLine(${l.id})">删除</button>`;
+    tb.append(`
+      <tr class="${l.is_master ? 'master-row' : ''}" data-line-id="${l.id}" data-line-ip="${escapeHtml(l.public_ip || '')}">
+        <td>${l.id}</td>
+        <td class="strong-cell">${escapeHtml(l.name || '-')} ${mainBadge(l)}</td>
+        <td><span class="proto-pill">${escapeHtml(l.public_ip || '-')}</span></td>
+        <td>${escapeHtml(l.internal_ip || '-')}</td>
+        <td class="small-cell">${escapeHtml(l.mac || '-')}</td>
+        <td>${escapeHtml(l.interface || '-')}</td>
+        <td><span class="port-pill">${escapeHtml(l.connection_count || 0)}</span></td>
+        <td><span class="port-pill">${escapeHtml(l.node_count || 0)}</span></td>
+        <td class="small-cell">${speedText(l.rx_bps, l.tx_bps)}</td>
+        <td class="small-cell">${trafficText(l.bytes_in, l.bytes_out)}</td>
+        <td><div class="line-actions">${ops}</div></td>
+      </tr>
+    `);
+  });
+  focusLineFromQuery();
+}
+
+function focusLineFromQuery() {
+  const params = new URLSearchParams(location.search);
+  const lineId = params.get('line_id');
+  const ip = params.get('ip');
+  if (!lineId && !ip) return;
+  const rows = Array.from(document.querySelectorAll('#lineTable tr'));
+  const row = rows.find(el => (lineId && String(el.dataset.lineId) === String(lineId)) || (ip && el.dataset.lineIp === ip));
+  if (!row) return;
+  row.classList.add('line-row-focus');
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+async function deleteLine(id) {
+  if (!confirm('确定删除这条虚拟线路？')) return;
+  const r = await api.del('/api/lines/' + id);
+  if (r.ok) { toast('已删除', 'success'); loadLines(); }
+  else toast(r.error || '删除失败', 'error');
+}
+
+async function changeMac(id) {
+  if (!confirm('确定更换这条线路的 MAC？公网 IP 可能会变化。')) return;
+  const r = await api.post('/api/lines/' + id + '/change-mac');
+  if (r.ok) { toast('MAC 已更换，线路已更新', 'success'); loadLines(); }
+  else toast(r.error || '更换失败', 'error');
+}
+
+async function syncLines() {
+  $('#btnSyncLines').prop('disabled', true);
+  const r = await api.post('/api/lines/sync-local');
+  $('#btnSyncLines').prop('disabled', false);
+  if (r.ok) {
+    toast(`更新完成，检测 ${r.data.detected_count} 个，新增 ${r.data.created_count} 条`, 'success');
+    await loadLines();
+  } else {
+    toast(r.error || '更新失败', 'error');
+  }
+}
+
+function openAdapterModal() {
+  $('#adapterCount').val(13);
+  $('#adapterParent').val('');
+  $('#adapterPrefix').val(24);
+  adapterModal.show();
+  loadMasterInterfaces();
+}
+
+function openInternalIpModal() {
+  $('#internalBase').val('10.42');
+  internalIpModal.show();
+}
+
+async function addAdapter() {
+  const payload = {
+    count: Number($('#adapterCount').val() || 13),
+    parent: $('#adapterParent').val(),
+    prefix: Number($('#adapterPrefix').val() || 24),
+  };
+  const selectedParent = masterInterfaces.find(x => x.name === payload.parent);
+  const targetText = selectedParent ? `主网卡 ${selectedParent.label || selectedParent.name}` : '所有主网卡';
+  if (!confirm(`确定在${targetText}下面创建 ${payload.count} 个虚拟 MAC 网卡吗？`)) return;
+  $('#btnSaveAdapter').prop('disabled', true);
+  const r = await api.post('/api/lines/add-virtual-adapter', payload);
+  $('#btnSaveAdapter').prop('disabled', false);
+  if (!r.ok) return toast(r.error || '创建虚拟网卡失败', 'error', 5000);
+  const created = r.data.created_count || 0;
+  const acquired = r.data.acquired_count || 0;
+  const failed = (r.data.errors || []).length;
+  const level = failed || acquired < created ? 'error' : 'success';
+  toast(`已创建 ${created} 个虚拟网卡，获取到 ${acquired} 个公网 IP${failed ? `，失败 ${failed} 个` : ''}`, level, 8000);
+  adapterModal.hide();
+  await syncLines();
+}
+
+async function loadMasterInterfaces() {
+  const select = $('#adapterParent');
+  select.prop('disabled', true).empty().append('<option value="">读取主网卡中...</option>');
+  $('#adapterParentHint').text('正在读取系统真实主网卡...');
+  const r = await api.get('/api/lines/master-interfaces');
+  if (!r.ok) {
+    select.empty().append('<option value="">读取失败</option>');
+    $('#adapterParentHint').text(r.error || '主网卡读取失败');
+    return;
+  }
+  masterInterfaces = r.data || [];
+  select.empty().append('<option value="">全部主网卡</option>');
+  masterInterfaces.forEach(item => {
+    const ips = (item.public_ips && item.public_ips.length ? item.public_ips : item.ipv4 || []).join(', ');
+    const suffix = [
+      item.is_default ? '默认路由' : '',
+      ips ? `IP ${ips}` : '',
+      item.mac ? `MAC ${item.mac}` : '',
+    ].filter(Boolean).join(' / ');
+    select.append(`<option value="${escapeHtml(item.name)}">${escapeHtml(item.label || item.name)} (${escapeHtml(item.name)})${suffix ? ` - ${escapeHtml(suffix)}` : ''}</option>`);
+  });
+  select.prop('disabled', false);
+  $('#adapterParentHint').text(masterInterfaces.length ? `已读取 ${masterInterfaces.length} 个主网卡，可选择单个或全部。` : '没有检测到可用主网卡，请先确认线路或默认路由。');
+}
+
+async function saveInternalIp() {
+  const base = $('#internalBase').val().trim() || '10.42';
+  if (!confirm(`确定按 ${base}.x.x 给所有线路配置内网 IP 吗？`)) return;
+  $('#btnSaveInternalIp').prop('disabled', true);
+  const r = await api.post('/api/lines/auto-internal-ips', { base });
+  $('#btnSaveInternalIp').prop('disabled', false);
+  if (!r.ok) return toast(r.error || '一键配置内网 IP 失败', 'error');
+  toast(`已配置 ${r.data.updated_count || 0} 条线路内网 IP`, 'success');
+  internalIpModal.hide();
+  await loadLines();
+}
+
+$(async () => {
+  adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
+  internalIpModal = new bootstrap.Modal(document.getElementById('internalIpModal'));
+  await loadLines();
+  $('#btnSyncLines').on('click', syncLines);
+  $('#btnAddAdapter').on('click', openAdapterModal);
+  $('#btnEditInternalIp').on('click', openInternalIpModal);
+  $('#btnSaveAdapter').on('click', addAdapter);
+  $('#btnSaveInternalIp').on('click', saveInternalIp);
+  setInterval(loadLines, 30000);
+});
+</script>
+{% endblock %}

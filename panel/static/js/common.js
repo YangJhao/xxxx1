@@ -1,0 +1,128 @@
+window.api = {
+  async request(method, url, body) {
+    try {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const r = await fetch(url, opts);
+      if (r.status === 401) {
+        location.href = '/login';
+        return { ok: false, error: '未登录' };
+      }
+      const text = await r.text();
+      try {
+        return JSON.parse(text);
+      } catch (e) {
+        return {
+          ok: false,
+          status: r.status,
+          error: `返回不是 JSON (${r.status})：${text.slice(0, 200) || '空响应'}`,
+        };
+      }
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  },
+  get: (url) => api.request('GET', url),
+  post: (url, data) => api.request('POST', url, data || {}),
+  put: (url, data) => api.request('PUT', url, data || {}),
+  del: (url) => api.request('DELETE', url),
+};
+
+window.toast = function (msg, type = 'info', ms = 2500) {
+  const c = document.getElementById('toast-container');
+  if (!c) return;
+  const t = document.createElement('div');
+  t.className = 'toast-msg ' + type;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => {
+    t.style.transition = 'opacity 0.3s';
+    t.style.opacity = '0';
+    setTimeout(() => t.remove(), 300);
+  }, ms);
+};
+
+window.formatBytes = function (bytes) {
+  if (bytes === 0 || bytes == null) return '0 B';
+  const k = 1024;
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), units.length - 1);
+  return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + units[i];
+};
+
+window.escapeHtml = function (value) {
+  if (value == null) return '';
+  return String(value).replace(/[&<>"']/g, c => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[c]));
+};
+
+function legacyCopy(value) {
+  const ta = document.createElement('textarea');
+  ta.value = value;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.left = '0';
+  ta.style.top = '0';
+  ta.style.width = '1px';
+  ta.style.height = '1px';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  ta.setSelectionRange(0, value.length);
+  let ok = false;
+  try {
+    ok = document.execCommand('copy');
+  } finally {
+    ta.remove();
+  }
+  return ok;
+}
+
+window.copyText = async function (text) {
+  const value = String(text || '').trim();
+  if (!value) {
+    toast('没有可复制的内容', 'error');
+    return false;
+  }
+
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value);
+      toast('已复制到剪贴板', 'success');
+      return true;
+    }
+  } catch (e) {
+    // Fallback below.
+  }
+
+  if (legacyCopy(value)) {
+    toast('已复制到剪贴板', 'success');
+    return true;
+  }
+
+  toast('浏览器禁止自动复制，请点击复制按钮后再试', 'error', 4000);
+  return false;
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+  const current = location.pathname;
+  document.querySelectorAll('.sidebar .nav-link').forEach(link => {
+    const href = link.getAttribute('href');
+    if (href === current || (href === '/nodes' && current === '/users')) {
+      link.classList.add('active');
+    }
+  });
+  const btn = document.getElementById('btnLogout');
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      await api.post('/api/logout');
+      location.href = '/login';
+    });
+  }
+});

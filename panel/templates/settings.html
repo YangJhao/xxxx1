@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block title %}系统设置 - 42IPwin{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2><i class="bi bi-gear"></i> 系统设置</h2>
+</div>
+
+<div class="row g-3">
+  <div class="col-md-6">
+    <div class="card-dark">
+      <h5><i class="bi bi-globe2"></i> 面板访问设置</h5>
+      <p class="form-hint">设置面板监听 IP，修改后需要重启面板服务生效。</p>
+      <div class="mb-3">
+        <label class="form-label">监听 IP</label>
+        <div class="input-group">
+          <select class="form-select" id="selBindIp" style="max-width: 280px;"></select>
+          <button class="btn btn-primary" id="btnSetBindIp"><i class="bi bi-check-lg"></i> 保存并应用</button>
+        </div>
+        <div class="form-hint">当前绑定: <span id="curBindIp">-</span></div>
+      </div>
+      <div class="alert alert-info small mb-0">访问地址: <strong id="accessUrl">-</strong></div>
+    </div>
+  </div>
+
+  <div class="col-md-6">
+    <div class="card-dark">
+      <h5><i class="bi bi-hdd-network"></i> sing-box 服务控制</h5>
+      <div class="d-flex align-items-center gap-2 mb-3">
+        <span>服务状态:</span>
+        <span class="status-pill" id="serviceStatus"><i class="bi bi-circle-fill"></i> 检测中...</span>
+      </div>
+      <div class="d-flex gap-2 flex-wrap">
+        <button class="btn btn-soft" id="btnServiceStart"><i class="bi bi-play-fill"></i> 启动</button>
+        <button class="btn btn-warning" id="btnServiceStop"><i class="bi bi-stop-fill"></i> 停止</button>
+        <button class="btn btn-primary" id="btnServiceReload"><i class="bi bi-arrow-clockwise"></i> 重载配置</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-md-6">
+    <div class="card-dark">
+      <h5><i class="bi bi-key"></i> 修改当前登录密码</h5>
+      <div class="mb-2"><input class="form-control" id="oldPwd" type="password" placeholder="当前密码"></div>
+      <div class="mb-2"><input class="form-control" id="newPwd" type="password" placeholder="新密码（至少6位）"></div>
+      <button class="btn btn-primary" id="btnChangePwd"><i class="bi bi-check"></i> 提交</button>
+    </div>
+  </div>
+
+  <div class="col-md-6">
+    <div class="card-dark">
+      <h5><i class="bi bi-database-down"></i> 数据备份与恢复</h5>
+      <p class="form-hint">备份包含数据库、面板配置和 sing-box 配置。恢复前系统会自动留一份恢复前备份。</p>
+      <div class="d-flex gap-2 flex-wrap mb-3">
+        <a class="btn btn-primary" href="/api/settings/backup"><i class="bi bi-download"></i> 备份数据</a>
+        <a class="btn btn-soft" href="/api/settings/export-db"><i class="bi bi-filetype-db"></i> 导出数据库</a>
+        <button class="btn btn-warning" id="btnPickRestore"><i class="bi bi-upload"></i> 恢复数据</button>
+        <input class="d-none" id="restoreFile" type="file" accept=".zip,.db,.sqlite,.sqlite3">
+      </div>
+      <div class="line-table-wrap shadow-none p-0">
+        <table class="line-table centered-table backup-table">
+          <thead><tr><th>备份文件</th><th>大小</th><th>时间</th></tr></thead>
+          <tbody id="backupTable"><tr><td colspan="3" class="empty-cell">读取中...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function formatDateTime(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+}
+
+async function loadSettingsInfo() {
+  const r = await api.get('/api/settings/info');
+  if (!r.ok) return;
+  const d = r.data;
+  const sel = $('#selBindIp').empty();
+  sel.append('<option value="0.0.0.0">0.0.0.0（所有网卡）</option>');
+  (d.internal_ips || []).forEach(item => sel.append(`<option value="${item.ip}">${item.ip} (${item.interface})</option>`));
+  sel.val(d.bind_ip || '0.0.0.0');
+  $('#curBindIp').text(d.bind_ip || '0.0.0.0');
+  const firstIp = (d.internal_ips || [])[0];
+  const host = (d.bind_ip && d.bind_ip !== '0.0.0.0') ? d.bind_ip : (firstIp ? firstIp.ip : '本机IP');
+  $('#accessUrl').text(`http://${host}:${d.panel_port || 8080}`);
+}
+
+async function loadServiceStatus() {
+  const r = await api.get('/api/status');
+  const pill = $('#serviceStatus');
+  if (r.ok && r.data.running) {
+    pill.removeClass('off').addClass('on').html(`<i class="bi bi-circle-fill"></i> 运行中 (PID ${r.data.pid})`);
+  } else {
+    pill.removeClass('on').addClass('off').html('<i class="bi bi-circle-fill"></i> 未运行');
+  }
+}
+
+async function loadBackups() {
+  const r = await api.get('/api/settings/backups');
+  const tb = $('#backupTable').empty();
+  if (!r.ok) return tb.append(`<tr><td colspan="3" class="empty-cell">${escapeHtml(r.error || '读取失败')}</td></tr>`);
+  const rows = r.data || [];
+  if (!rows.length) return tb.append('<tr><td colspan="3" class="empty-cell">暂无备份</td></tr>');
+  rows.slice(0, 8).forEach(row => tb.append(`
+    <tr>
+      <td class="strong-cell text-start">${escapeHtml(row.name)}</td>
+      <td>${formatBytes(row.size || 0)}</td>
+      <td>${escapeHtml(formatDateTime(row.created_at))}</td>
+    </tr>
+  `));
+}
+
+async function setBindIp() {
+  const r = await api.post('/api/settings/bind-ip', { bind_ip: $('#selBindIp').val() });
+  toast(r.ok ? '监听 IP 已保存' : (r.error || '保存失败'), r.ok ? 'success' : 'error');
+  if (r.ok) loadSettingsInfo();
+}
+
+async function changePwd() {
+  const r = await api.post('/api/password', { old_password: $('#oldPwd').val(), new_password: $('#newPwd').val() });
+  if (!r.ok) return toast(r.error || '修改失败', 'error');
+  toast('密码已修改，请重新登录', 'success');
+  setTimeout(() => location.href = '/login', 1200);
+}
+
+async function serviceAction(action) {
+  const r = await api.post(`/api/proxy/${action}`, {});
+  toast(r.ok ? '操作成功' : (r.error || '操作失败'), r.ok ? 'success' : 'error');
+  setTimeout(loadServiceStatus, 800);
+}
+
+function pickRestoreFile() {
+  $('#restoreFile').val('').trigger('click');
+}
+
+async function restoreData() {
+  const file = document.getElementById('restoreFile').files[0];
+  if (!file) return;
+  if (!confirm(`确定恢复 ${file.name}？当前数据会先自动备份，然后再覆盖恢复。`)) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  $('#btnPickRestore').prop('disabled', true);
+  try {
+    const resp = await fetch('/api/settings/restore', { method: 'POST', body: fd });
+    if (resp.status === 401) {
+      location.href = '/login';
+      return;
+    }
+    const r = await resp.json();
+    if (!r.ok) return toast(r.error || '恢复失败', 'error', 6000);
+    toast('数据已恢复，正在刷新页面', 'success', 3000);
+    await loadBackups();
+    setTimeout(() => location.reload(), 1200);
+  } catch (e) {
+    toast(e.message || '恢复失败', 'error', 6000);
+  } finally {
+    $('#btnPickRestore').prop('disabled', false);
+  }
+}
+
+$(async () => {
+  await Promise.all([loadSettingsInfo(), loadServiceStatus(), loadBackups()]);
+  $('#btnSetBindIp').on('click', setBindIp);
+  $('#btnChangePwd').on('click', changePwd);
+  $('#btnServiceStart').on('click', () => serviceAction('start'));
+  $('#btnServiceStop').on('click', () => serviceAction('stop'));
+  $('#btnServiceReload').on('click', () => serviceAction('reload'));
+  $('#btnPickRestore').on('click', pickRestoreFile);
+  $('#restoreFile').on('change', restoreData);
+  setInterval(loadServiceStatus, 10000);
+});
+</script>
+{% endblock %}

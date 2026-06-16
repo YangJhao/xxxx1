@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}操作日志 - 42IPwin{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h2><i class="bi bi-clock-history"></i> 操作日志</h2>
+  <button class="btn btn-soft" id="btnRefreshLogs"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+</div>
+
+<div class="line-table-wrap">
+  <table class="line-table centered-table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>操作人</th>
+        <th>模块</th>
+        <th>操作</th>
+        <th>详情</th>
+        <th>IP</th>
+        <th>操作日期</th>
+      </tr>
+    </thead>
+    <tbody id="logTable"></tbody>
+  </table>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function formatDateTime(value) {
+  if (!value) return '-';
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
+}
+
+async function loadLogs() {
+  const r = await api.get('/api/operation-logs');
+  if (!r.ok) return toast(r.error || '读取日志失败', 'error');
+  const rows = r.data || [];
+  const tb = $('#logTable').empty();
+  if (!rows.length) {
+    tb.append('<tr><td colspan="7" class="empty-cell">暂无操作日志</td></tr>');
+    return;
+  }
+  rows.forEach(row => {
+    tb.append(`
+      <tr>
+        <td>${row.id}</td>
+        <td>${escapeHtml(row.operator || '-')}</td>
+        <td>${escapeHtml(row.module || '-')}</td>
+        <td>${escapeHtml(row.action || '-')}</td>
+        <td>${escapeHtml(row.detail || '-')}</td>
+        <td>${escapeHtml(row.ip || '-')}</td>
+        <td>${escapeHtml(formatDateTime(row.created_at))}</td>
+      </tr>
+    `);
+  });
+}
+
+$(async () => {
+  await loadLogs();
+  $('#btnRefreshLogs').on('click', loadLogs);
+});
+</script>
+{% endblock %}
