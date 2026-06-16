@@ -15,7 +15,7 @@ from models import Line, get_session
 from routes.auth import login_required
 from services import proxy_manager
 from services.cfg_generator import write_cfg
-from services.system_info import get_port_connections
+from services.system_info import get_port_connections, get_public_ip
 
 bp = Blueprint("ips", __name__, url_prefix="/api/lines")
 
@@ -200,6 +200,40 @@ def _add_detected(results: list, seen: set, iface_info: dict, ip: str, **extra):
     results.append(item)
 
 
+def _first_default_iface_info() -> dict:
+    ifaces = _iface_snapshot()
+    for name in _linux_default_interfaces():
+        info = ifaces.get(name)
+        if info and info.get("ipv4"):
+            return info
+    for name, info in ifaces.items():
+        if name != "lo" and info.get("ipv4"):
+            return info
+    return {}
+
+
+def _add_cloud_nat_public_ip(results: list, seen: set):
+    # Cloud NAT/EIP public addresses usually do not appear on the NIC itself.
+    if any(_is_public_candidate(item.get("ip", "")) for item in results):
+        return
+    public_ip = (get_public_ip() or {}).get("ip")
+    if not _is_public_candidate(public_ip):
+        return
+    iface_info = _first_default_iface_info()
+    if not iface_info:
+        return
+    label = iface_info.get("display_name") or iface_info.get("interface") or "默认网卡"
+    _add_detected(
+        results,
+        seen,
+        iface_info,
+        public_ip,
+        display_name=f"{label}-NAT公网",
+        parent_adapter=label,
+        nat_public=True,
+    )
+
+
 def _detect_local_ips(force: bool = False) -> list:
     now = time.time()
     if not force and DETECT_CACHE["data"] is not None and now - DETECT_CACHE["time"] < 5:
@@ -238,6 +272,8 @@ def _detect_local_ips(force: bool = False) -> list:
                     )
         except Exception as exc:
             print(f"[detect_ips powershell] {exc}")
+    if os.name != "nt":
+        _add_cloud_nat_public_ip(results, seen)
     DETECT_CACHE["time"] = now
     DETECT_CACHE["data"] = results
     return results

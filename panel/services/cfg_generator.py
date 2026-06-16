@@ -2,8 +2,11 @@
 import json
 import os
 import re
+import socket
 import sys
 from pathlib import Path
+
+import psutil
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import SING_BOX_CERT, SING_BOX_CFG, SING_BOX_KEY, SING_BOX_LOG
@@ -74,10 +77,29 @@ def _add_route(cfg: dict, tag: str, out_tag: str):
     cfg["route"]["rules"].append({"inbound": [tag], "outbound": out_tag})
 
 
-def _listen_ip(line: Line) -> str:
-    # Bind the inbound to the current client-facing IP for this line. This prevents the same
-    # port/auth from being accepted through other public IPs. Line sync rewrites this when IPs move.
+def _local_ipv4s() -> set[str]:
+    ips = set()
+    try:
+        for rows in psutil.net_if_addrs().values():
+            for addr in rows:
+                if addr.family == socket.AF_INET:
+                    ips.add(addr.address)
+    except Exception:
+        pass
+    return ips
+
+
+def _bind_ip(line: Line, local_ips: set[str] | None = None) -> str:
+    local_ips = local_ips if local_ips is not None else _local_ipv4s()
+    if line.public_ip in local_ips:
+        return line.public_ip
+    if line.internal_ip and line.internal_ip != "0.0.0.0":
+        return line.internal_ip
     return line.public_ip
+
+
+def _listen_ip(line: Line) -> str:
+    return _bind_ip(line)
 
 
 def _user_port(user: ProxyUser) -> int:
@@ -111,6 +133,7 @@ def generate_cfg(session=None) -> str:
             ],
             "route": {"rules": []},
         }
+        local_ips = _local_ipv4s()
 
         for line in lines:
             line_users = [u for u in users if u.line_id == line.id]
@@ -121,7 +144,7 @@ def generate_cfg(session=None) -> str:
             cfg["outbounds"].append({
                 "type": "direct",
                 "tag": out_tag,
-                "inet4_bind_address": line.public_ip,
+                "inet4_bind_address": _bind_ip(line, local_ips),
             })
 
             for user in [u for u in line_users if u.protocol == "socks5"]:
