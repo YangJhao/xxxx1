@@ -1,5 +1,6 @@
 """42IPwin web panel entrypoint."""
 import argparse
+import os
 import sys
 import threading
 import webbrowser
@@ -101,7 +102,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--init", action="store_true", help="初始化数据库")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    parser.add_argument("--lite", action="store_true", help="轻量模式：启动 sing-box，关闭后台流量采集")
+    parser.add_argument("--no-collector", action="store_true", help="不启动后台流量采集")
+    parser.add_argument("--singbox-watchdog", action="store_true", help="后台看护 sing-box，异常退出后自动拉起")
     args = parser.parse_args()
+    lite_mode = args.lite or os.environ.get("42IPWIN_LITE") == "1"
+    no_collector = lite_mode or args.no_collector or os.environ.get("42IPWIN_NO_COLLECTOR") == "1"
+    singbox_watchdog = args.singbox_watchdog or os.environ.get("42IPWIN_SINGBOX_WATCHDOG") == "1"
 
     if args.init:
         init_db()
@@ -113,7 +120,24 @@ def main():
         proxy_manager.ensure_running()
     except Exception as exc:
         print(f"[sing-box] ensure running failed: {exc}")
-    threading.Thread(target=start_collector, args=(5,), daemon=True).start()
+
+    if singbox_watchdog:
+        def keep_singbox_alive():
+            while True:
+                try:
+                    proxy_manager.ensure_running()
+                except Exception as exc:
+                    print(f"[sing-box watchdog] {exc}")
+                threading.Event().wait(10)
+        threading.Thread(target=keep_singbox_alive, daemon=True).start()
+
+    if no_collector:
+        print("[lite] 后台流量采集已关闭，sing-box 保持在线")
+    else:
+        try:
+            threading.Thread(target=start_collector, args=(5,), daemon=True).start()
+        except Exception as exc:
+            print(f"[traffic] collector start failed: {exc}")
 
     app = create_app()
     bind_ip = get_panel_bind_ip()
@@ -124,6 +148,8 @@ def main():
     print(f"  访问地址: {url}")
     print(f"  监听 IP: {bind_ip} (0.0.0.0=所有网卡)")
     print("  代理内核: sing-box")
+    print(f"  运行模式: {'lite' if lite_mode else 'full'}")
+    print(f"  sing-box 看护: {'on' if singbox_watchdog else 'off'}")
     print("=" * 60)
 
     if not args.no_browser:
