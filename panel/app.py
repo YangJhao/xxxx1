@@ -106,9 +106,9 @@ def main():
     parser.add_argument("--no-collector", action="store_true", help="不启动后台流量采集")
     parser.add_argument("--singbox-watchdog", action="store_true", help="后台看护 sing-box，异常退出后自动拉起")
     args = parser.parse_args()
-    lite_mode = args.lite or os.environ.get("42IPWIN_LITE") == "1"
-    no_collector = lite_mode or args.no_collector or os.environ.get("42IPWIN_NO_COLLECTOR") == "1"
-    singbox_watchdog = args.singbox_watchdog or os.environ.get("42IPWIN_SINGBOX_WATCHDOG") == "1"
+    lite_mode = args.lite or os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
+    no_collector = lite_mode or args.no_collector or os.environ.get("IPWIN42_NO_COLLECTOR") == "1" or os.environ.get("42IPWIN_NO_COLLECTOR") == "1"
+    singbox_watchdog = args.singbox_watchdog or os.environ.get("IPWIN42_SINGBOX_WATCHDOG") == "1" or os.environ.get("42IPWIN_SINGBOX_WATCHDOG") == "1"
 
     if args.init:
         init_db()
