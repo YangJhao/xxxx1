@@ -17,16 +17,20 @@ def parse_size_to_bytes(value) -> int | None:
     if not value:
         return None
     text = str(value).strip().lower().replace(" ", "")
-    m = re.match(r"^(\d+(?:\.\d+)?)(b|kb|mb|gb|tb|kib|mib|gib|tib)?$", text)
+    m = re.match(r"^(\d+(?:\.\d+)?)(b|k|kb|m|mb|g|gb|t|tb|kib|mib|gib|tib)?$", text)
     if not m:
         return None
     number = float(m.group(1))
     unit = m.group(2) or "gb"
     mult = {
         "b": 1,
+        "k": 1000,
         "kb": 1000,
+        "m": 1000**2,
         "mb": 1000**2,
+        "g": 1000**3,
         "gb": 1000**3,
+        "t": 1000**4,
         "tb": 1000**4,
         "kib": 1024,
         "mib": 1024**2,
@@ -93,13 +97,18 @@ def _bind_ip(line: Line, local_ips: set[str] | None = None) -> str:
     local_ips = local_ips if local_ips is not None else _local_ipv4s()
     if line.public_ip in local_ips:
         return line.public_ip
-    if line.internal_ip and line.internal_ip != "0.0.0.0":
+    if line.internal_ip and line.internal_ip != "0.0.0.0" and line.internal_ip in local_ips:
         return line.internal_ip
-    return line.public_ip
+    return ""
 
 
-def _listen_ip(line: Line) -> str:
-    return _bind_ip(line)
+def _listen_ip(line: Line, local_ips: set[str] | None = None) -> str:
+    local_ips = local_ips if local_ips is not None else _local_ipv4s()
+    if line.public_ip in local_ips:
+        return line.public_ip
+    if line.internal_ip and line.internal_ip != "0.0.0.0" and line.internal_ip in local_ips:
+        return line.internal_ip
+    return ""
 
 
 def _user_port(user: ProxyUser) -> int:
@@ -111,8 +120,12 @@ def generate_cfg(session=None) -> str:
     if own_session:
         session = get_session()
     try:
-        lines = session.query(Line).filter_by(status=1).order_by(Line.id).all()
         users = session.query(ProxyUser).filter_by(status=1).all()
+        lines = [
+            line
+            for line in session.query(Line).order_by(Line.id).all()
+            if line.status == 1 and "\u4e3b\u7f51\u5361" not in (line.name or "")
+        ]
         cfg = {
             "log": {
                 "disabled": False,
@@ -139,12 +152,16 @@ def generate_cfg(session=None) -> str:
             line_users = [u for u in users if u.line_id == line.id]
             if not line_users:
                 continue
+            bind_ip = _bind_ip(line, local_ips)
+            listen_ip = _listen_ip(line, local_ips)
+            if not bind_ip or not listen_ip:
+                continue
 
             out_tag = _outbound_tag(line)
             cfg["outbounds"].append({
                 "type": "direct",
                 "tag": out_tag,
-                "inet4_bind_address": _bind_ip(line, local_ips),
+                "inet4_bind_address": bind_ip,
             })
 
             for user in [u for u in line_users if u.protocol == "socks5"]:
@@ -152,7 +169,7 @@ def generate_cfg(session=None) -> str:
                 cfg["inbounds"].append({
                     "type": "socks",
                     "tag": tag,
-                    "listen": _listen_ip(line),
+                    "listen": listen_ip,
                     "listen_port": _user_port(user),
                     "users": [_auth_user(user)],
                 })
@@ -163,7 +180,7 @@ def generate_cfg(session=None) -> str:
                 cfg["inbounds"].append({
                     "type": "http",
                     "tag": tag,
-                    "listen": _listen_ip(line),
+                    "listen": listen_ip,
                     "listen_port": _user_port(user),
                     "users": [_auth_user(user)],
                 })
@@ -174,7 +191,7 @@ def generate_cfg(session=None) -> str:
                 cfg["inbounds"].append({
                     "type": "shadowsocks",
                     "tag": tag,
-                    "listen": _listen_ip(line),
+                    "listen": listen_ip,
                     "listen_port": _user_port(user),
                     "method": user.ss_method or "aes-256-gcm",
                     "password": user.ss_password or user.password,
@@ -186,7 +203,7 @@ def generate_cfg(session=None) -> str:
                 cfg["inbounds"].append({
                     "type": "vless",
                     "tag": tag,
-                    "listen": _listen_ip(line),
+                    "listen": listen_ip,
                     "listen_port": _user_port(user),
                     "users": [_uuid_user(user)],
                 })
@@ -197,7 +214,7 @@ def generate_cfg(session=None) -> str:
                 cfg["inbounds"].append({
                     "type": "trojan",
                     "tag": tag,
-                    "listen": _listen_ip(line),
+                    "listen": listen_ip,
                     "listen_port": _user_port(user),
                     "users": [_password_user(user)],
                     "tls": _tls_config(),
@@ -209,7 +226,7 @@ def generate_cfg(session=None) -> str:
                 cfg["inbounds"].append({
                     "type": "hysteria2",
                     "tag": tag,
-                    "listen": _listen_ip(line),
+                    "listen": listen_ip,
                     "listen_port": _user_port(user),
                     "users": [_password_user(user)],
                     "tls": _tls_config(),

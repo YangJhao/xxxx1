@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}PVE - 42IPwin{% endblock %}
+{% block title %}HV虚拟机 - 42IPwin{% endblock %}
 {% block content %}
 <div class="page-header mgmt-head">
   <div>
-    <h2><i class="bi bi-pc-display"></i> PVE 管理</h2>
+    <h2><i class="bi bi-pc-display"></i> HV虚拟机管理</h2>
     <p>列表模式管理虚拟机，支持单台和批量操作。</p>
   </div>
   <button class="btn btn-outline-info btn-sm" id="btnRefresh"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
@@ -32,7 +32,7 @@
         <div class="create-form-grid hv-config-grid">
           <div>
             <label class="form-label">名称前缀</label>
-            <input class="form-control" id="newPrefix" value="pve">
+            <input class="form-control" id="newPrefix" value="hv">
           </div>
           <div>
             <label class="form-label">新建数量</label>
@@ -81,7 +81,7 @@
             </select>
           </div>
         </div>
-        <div class="form-hint mt-3">将按“前缀-编号”创建，例如 pve-001、pve-002。这里创建的是空白 VHDX 虚拟机，装系统/挂镜像需要后续再接入镜像流程。</div>
+        <div class="form-hint mt-3">将按“前缀-编号”创建，例如 hv-001、hv-002。这里创建的是空白 VHDX 虚拟机，装系统/挂镜像需要后续再接入镜像流程。</div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
@@ -197,7 +197,7 @@
             <input class="form-control" id="cfgNotes">
           </div>
         </div>
-        <div class="form-hint mt-3">CPU、内存等配置通常需要虚拟机关闭后才能修改；运行中保存会由 PVE 返回错误。</div>
+        <div class="form-hint mt-3">CPU、内存等配置通常需要虚拟机关闭后才能修改；运行中保存会由 Hyper-V 返回错误。</div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
@@ -217,7 +217,7 @@
       <div class="modal-body">
         <label class="form-label">新密码</label>
         <input class="form-control" type="password" id="newPassword" autocomplete="new-password">
-        <div class="form-hint mt-3">PVE 主机不能直接修改虚拟机系统内密码，需要客户机脚本、集成代理或系统账号权限。这里会先提交请求并提示当前后端能力。</div>
+        <div class="form-hint mt-3">Hyper-V 主机不能直接修改虚拟机系统内密码，需要客户机脚本、集成代理或系统账号权限。这里会先提交请求并提示当前后端能力。</div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
@@ -275,7 +275,7 @@ function actionButtons(vm) {
 function renderRows() {
   const tb = $('#vmTable').empty();
   if (!vmRows.length) {
-    const text = pveAvailable ? '没有读取到虚拟机。' : '当前环境不是 PVE 主机，无法读取虚拟机。';
+    const text = pveAvailable ? '没有读取到虚拟机。' : '当前环境不是 Hyper-V 主机，无法读取虚拟机。';
     tb.append(`<tr><td colspan="8" class="empty-cell">${text}</td></tr>`);
     return;
   }
@@ -298,13 +298,13 @@ function renderRows() {
 async function loadHyperV() {
   $('#btnRefresh').prop('disabled', true);
   const [summary, vms] = await Promise.all([
-    api.get('/api/pve/summary'),
-    api.get('/api/pve/vms')
+    api.get('/api/hyperv/summary'),
+    api.get('/api/hyperv/vms')
   ]);
   $('#btnRefresh').prop('disabled', false);
   if (!summary.ok) {
     pveAvailable = false;
-    $('#pveUnavailable').removeClass('d-none').text(summary.error || 'PVE 环境不可用');
+    $('#pveUnavailable').removeClass('d-none').text(summary.error || 'Hyper-V 环境不可用');
     vmRows = [];
     renderRows();
     return;
@@ -312,11 +312,11 @@ async function loadHyperV() {
   const s = summary.data || {};
   pveAvailable = s.available !== false;
   if (!pveAvailable) {
-    $('#pveUnavailable').removeClass('d-none').text(s.message || 'PVE 模块需要运行在 Proxmox VE 宿主机上。');
+    $('#pveUnavailable').removeClass('d-none').text(s.message || 'HV虚拟机模块需要运行在 Hyper-V 主机上。');
     $('.hv-bulkbar button').prop('disabled', true);
     $('#btnRefresh').prop('disabled', false);
     vmRows = [];
-    $('#hvHost').text(s.computer_name ? `主机：${s.computer_name} / PVE 不可用` : 'PVE 不可用');
+    $('#hvHost').text(s.computer_name ? `主机：${s.computer_name} / Hyper-V 不可用` : 'Hyper-V 不可用');
     renderRows();
     return;
   }
@@ -329,7 +329,7 @@ async function loadHyperV() {
 }
 
 async function loadSwitches() {
-  const r = await api.get('/api/pve/switches');
+  const r = await api.get('/api/hyperv/switches');
   const sel = $('#newSwitch');
   const current = sel.val() || '';
   sel.empty().append('<option value="">不连接</option>');
@@ -342,7 +342,7 @@ async function loadSwitches() {
 }
 
 async function loadImages() {
-  const r = await api.get('/api/pve/images');
+  const r = await api.get('/api/hyperv/images');
   const sel = $('#newImage');
   const tb = $('#imageTable');
   const current = sel.val() || '';
@@ -364,14 +364,14 @@ async function loadImages() {
 }
 
 function openCreateModal() {
-  if (!pveAvailable) return toast('当前服务器不是 PVE 主机，不能创建虚拟机', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能创建虚拟机', 'error', 4000);
   loadSwitches();
   loadImages();
   createModal.show();
 }
 
 function openImageModal() {
-  if (!pveAvailable) return toast('当前服务器不是 PVE 主机，不能导入镜像', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能导入镜像', 'error', 4000);
   $('#imagePath').val('');
   loadImages();
   imageModal.show();
@@ -381,7 +381,7 @@ async function importImage() {
   const path = $('#imagePath').val();
   if (!path) return toast('请输入镜像路径', 'error');
   $('#btnImportImage').prop('disabled', true);
-  const r = await api.post('/api/pve/images/import', { path });
+  const r = await api.post('/api/hyperv/images/import', { path });
   $('#btnImportImage').prop('disabled', false);
   if (r.ok) {
     toast('镜像已导入', 'success');
@@ -392,7 +392,7 @@ async function importImage() {
 }
 
 async function createBatch() {
-  if (!pveAvailable) return toast('当前服务器不是 PVE 主机，不能创建虚拟机', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能创建虚拟机', 'error', 4000);
   const payload = {
     prefix: $('#newPrefix').val(),
     count: Number($('#newCount').val()),
@@ -407,7 +407,7 @@ async function createBatch() {
   };
   if (!confirm(`确定新建 ${payload.count} 台虚拟机吗？`)) return;
   $('#btnCreateBatch').prop('disabled', true);
-  const r = await api.post('/api/pve/batch-create', payload);
+  const r = await api.post('/api/hyperv/batch-create', payload);
   $('#btnCreateBatch').prop('disabled', false);
   if (r.ok) {
     const failed = (r.data || []).filter(x => !x.ok);
@@ -420,11 +420,11 @@ async function createBatch() {
 }
 
 async function vmAction(name, action) {
-  if (!pveAvailable) return toast('当前服务器不是 PVE 主机，不能操作虚拟机', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能操作虚拟机', 'error', 4000);
   const labels = { start: '开机', shutdown: '关机', turnoff: '强制断电', restart: '重启', reset: '重置系统' };
   const label = labels[action] || action;
   if (!confirm(`确定要${label}虚拟机 ${name} 吗？`)) return;
-  const r = await api.post(`/api/pve/vms/${encodeURIComponent(name)}/${action}`);
+  const r = await api.post(`/api/hyperv/vms/${encodeURIComponent(name)}/${action}`);
   if (r.ok) {
     toast(`${label}命令已执行`, 'success');
     await loadHyperV();
@@ -434,12 +434,12 @@ async function vmAction(name, action) {
 }
 
 async function batchAction(action) {
-  if (!pveAvailable) return toast('当前服务器不是 PVE 主机，不能操作虚拟机', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能操作虚拟机', 'error', 4000);
   const names = selectedNames();
   const labels = { restart: '批量重启', shutdown: '批量关机', reset: '批量重置系统', reset_password: '批量重置密码' };
   if (!names.length) return toast('请先选择机器', 'error');
   if (!confirm(`确定对 ${names.length} 台机器执行${labels[action] || action}吗？`)) return;
-  const r = await api.post(`/api/pve/batch/${action}`, { names });
+  const r = await api.post(`/api/hyperv/batch/${action}`, { names });
   if (r.ok) {
     const failed = (r.data || []).filter(x => !x.ok);
     toast(failed.length ? `已执行，失败 ${failed.length} 台` : '批量命令已执行', failed.length ? 'error' : 'success');
@@ -450,8 +450,8 @@ async function batchAction(action) {
 }
 
 async function openConfig(name) {
-  if (!pveAvailable) return toast('当前服务器不是 PVE 主机，不能读取配置', 'error', 4000);
-  const r = await api.get(`/api/pve/vms/${encodeURIComponent(name)}/config`);
+  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能读取配置', 'error', 4000);
+  const r = await api.get(`/api/hyperv/vms/${encodeURIComponent(name)}/config`);
   if (!r.ok) return toast(r.error || '读取配置失败', 'error');
   const d = r.data || {};
   $('#cfgName').val(d.name || name);
@@ -479,7 +479,7 @@ async function saveConfig() {
     automatic_stop_action: $('#cfgStopAction').val(),
     notes: $('#cfgNotes').val()
   };
-  const r = await api.post(`/api/pve/vms/${encodeURIComponent(name)}/config`, payload);
+  const r = await api.post(`/api/hyperv/vms/${encodeURIComponent(name)}/config`, payload);
   if (r.ok) {
     toast('配置已保存', 'success');
     configModal.hide();
@@ -490,7 +490,7 @@ async function saveConfig() {
 }
 
 function openPasswordModal() {
-  if (!pveAvailable) return toast('当前服务器不是 PVE 主机，不能重置密码', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能重置密码', 'error', 4000);
   if (!selectedNames().length) return toast('请先选择机器', 'error');
   $('#newPassword').val('');
   passwordModal.show();
@@ -500,7 +500,7 @@ async function resetPassword() {
   const names = selectedNames();
   const password = $('#newPassword').val();
   if (!password) return toast('请输入新密码', 'error');
-  const r = await api.post('/api/pve/batch/reset_password', { names, password });
+  const r = await api.post('/api/hyperv/batch/reset_password', { names, password });
   if (r.ok) toast('密码重置请求已提交', 'success');
   else toast(r.error || '当前后端无法直接重置客户机密码', 'error', 5000);
 }

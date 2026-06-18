@@ -1,7 +1,11 @@
 """Monitoring, statistics, and panel settings APIs."""
 import os
 import shutil
+import subprocess
+import sys
+import threading
 import time
+import urllib.request
 import zipfile
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -30,6 +34,24 @@ LOG_TAIL_LINES = 200
 _probe_last = {"time": 0.0, "recv": 0, "sent": 0}
 BACKUP_DIR = Path(PROJECT_DIR) / "data" / "backups"
 RESTORE_DIR = Path(PROJECT_DIR) / "data" / "restore_uploads"
+UPGRADE_DIR = Path(PROJECT_DIR) / "data" / "upgrade_uploads"
+UPGRADE_SKIP_PREFIXES = (
+    ".git/",
+    ".agents/",
+    ".codex/",
+    "data/",
+    "panel/__pycache__/",
+    "panel/routes/__pycache__/",
+    "panel/services/__pycache__/",
+    "3proxy/logs/",
+)
+UPGRADE_SKIP_NAMES = {
+    "data/panel.db",
+    "data/panel_cfg.json",
+    "sing-box/sing-box.log",
+    "3proxy/3proxy.pid",
+    "sing-box/sing-box.pid",
+}
 
 
 def _timestamp() -> str:
@@ -61,6 +83,117 @@ def _create_backup_zip() -> Path:
                 zf.write(src, arc)
         zf.writestr("backup_info.txt", f"42IPwin data backup\ncreated_at={datetime.now().isoformat()}\n")
     return target
+
+
+def _safe_zip_members(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    members = []
+    for info in zf.infolist():
+        name = info.filename.replace("\\", "/").lstrip("/")
+        parts = [p for p in name.split("/") if p]
+        if not parts or any(p == ".." for p in parts):
+            continue
+        if parts[0].lower() in {"42ipwin", "42ipwin-main", "42ipwin-windows-deploy"}:
+            name = "/".join(parts[1:])
+        if not name or name.endswith("/"):
+            continue
+        info.filename = name
+        members.append(info)
+    return members
+
+
+def _should_skip_upgrade_member(name: str) -> bool:
+    norm = name.replace("\\", "/").lstrip("/")
+    if norm in UPGRADE_SKIP_NAMES:
+        return True
+    return any(norm.startswith(prefix) for prefix in UPGRADE_SKIP_PREFIXES)
+
+
+def _backup_program_files(paths: list[Path]) -> Path:
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    target = BACKUP_DIR / _safe_backup_name("before-upgrade-program", ".zip")
+    root = Path(PROJECT_DIR).resolve()
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for path in paths:
+            if path.exists() and path.is_file():
+                zf.write(path, path.resolve().relative_to(root).as_posix())
+        zf.writestr("backup_info.txt", f"42IPwin program backup\ncreated_at={datetime.now().isoformat()}\n")
+    return target
+
+
+def _apply_upgrade_zip(src: Path) -> dict:
+    if not zipfile.is_zipfile(src):
+        raise ValueError("升级包格式错误，只支持 .zip")
+    root = Path(PROJECT_DIR).resolve()
+    applied = []
+    skipped = []
+    tasks = []
+    with zipfile.ZipFile(src, "r") as zf:
+        members = _safe_zip_members(zf)
+        for info in members:
+            name = info.filename
+            if _should_skip_upgrade_member(name):
+                skipped.append(name)
+                continue
+            target = (root / name).resolve()
+            if root not in target.parents and target != root:
+                skipped.append(name)
+                continue
+            tasks.append((info, target))
+        targets = [target for _, target in tasks]
+        backup_path = _backup_program_files(targets)
+        for info, target in tasks:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as rf, open(target, "wb") as wf:
+                shutil.copyfileobj(rf, wf)
+            applied.append(info.filename)
+    return {
+        "applied_count": len(applied),
+        "skipped_count": len(skipped),
+        "applied": applied[:80],
+        "skipped": skipped[:80],
+        "backup": str(backup_path),
+        "restart_required": True,
+    }
+
+
+def _download_upgrade_package(url: str) -> Path:
+    if not url.lower().startswith(("http://", "https://")):
+        raise ValueError("升级地址必须以 http:// 或 https:// 开头")
+    UPGRADE_DIR.mkdir(parents=True, exist_ok=True)
+    target = UPGRADE_DIR / _safe_backup_name("upgrade-url", ".zip")
+    req = urllib.request.Request(url, headers={"User-Agent": "42IPwin-updater/1.0"})
+    with urllib.request.urlopen(req, timeout=60) as resp, open(target, "wb") as wf:
+        shutil.copyfileobj(resp, wf)
+    if target.stat().st_size <= 0:
+        raise ValueError("下载到的升级包为空")
+    return target
+
+
+def _schedule_panel_restart(delay: float = 1.0):
+    project = str(Path(PROJECT_DIR).resolve())
+    app_path = str((Path(PROJECT_DIR) / "panel" / "app.py").resolve())
+    python_exe = sys.executable
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS if os.name == "nt" else 0
+    child_code = (
+        "import subprocess,time,os,sys;"
+        f"time.sleep({float(delay) + 1.0!r});"
+        f"subprocess.Popen({[python_exe, app_path, '--no-browser']!r}, cwd={project!r}, "
+        f"creationflags={flags!r} if os.name == 'nt' else 0, "
+        "close_fds=True)"
+    )
+
+    def restart_worker():
+        try:
+            subprocess.Popen(
+                [python_exe, "-c", child_code],
+                cwd=project,
+                creationflags=flags,
+                close_fds=True,
+            )
+        finally:
+            os._exit(0)
+
+    threading.Timer(delay, restart_worker).start()
 
 
 def _restore_from_db_file(src: Path):
@@ -135,8 +268,10 @@ def stop_proxy():
 @login_required
 def reload_proxy():
     try:
-        pid = proxy_manager.reload_config()
-        return jsonify({"ok": True, "data": {"pid": pid}})
+        data = request.get_json(silent=True) or {}
+        force = bool(data.get("force"))
+        pid = proxy_manager.restart_config() if force else proxy_manager.reload_config()
+        return jsonify({"ok": True, "data": {"pid": pid, "restarted": force}})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -387,14 +522,11 @@ def settings_bind_ip():
 @bp.route("/settings/restart-panel", methods=["POST"])
 @login_required
 def restart_panel():
-    restart_flag = os.path.join(PROJECT_DIR, "data", ".restart_panel")
-    os.makedirs(os.path.dirname(restart_flag), exist_ok=True)
-    with open(restart_flag, "w", encoding="utf-8") as f:
-        f.write("")
-    return jsonify({"ok": True, "data": {
-        "message": "重启标记已写入，下次启动时将使用新配置。",
-        "note": "请重启 panel 服务以使 IP 绑定生效。",
-    }})
+    try:
+        _schedule_panel_restart()
+        return jsonify({"ok": True, "data": {"message": "???????? 3-5 ???????"}})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/settings/backup", methods=["GET"])
@@ -438,6 +570,41 @@ def settings_restore():
         else:
             _restore_from_db_file(upload_path)
         return jsonify({"ok": True, "data": {"message": "数据已恢复，请重启面板或刷新页面后使用。"}})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/settings/upgrade", methods=["POST"])
+@login_required
+def settings_upgrade_upload():
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"ok": False, "error": "请选择升级包"}), 400
+    filename = os.path.basename(file.filename)
+    if Path(filename).suffix.lower() != ".zip":
+        return jsonify({"ok": False, "error": "升级包只支持 .zip 文件"}), 400
+    UPGRADE_DIR.mkdir(parents=True, exist_ok=True)
+    upload_path = UPGRADE_DIR / f"{_timestamp()}-{filename}"
+    try:
+        file.save(upload_path)
+        result = _apply_upgrade_zip(upload_path)
+        return jsonify({"ok": True, "data": result})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/settings/upgrade-url", methods=["POST"])
+@login_required
+def settings_upgrade_url():
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"ok": False, "error": "请输入升级包 URL"}), 400
+    try:
+        package = _download_upgrade_package(url)
+        result = _apply_upgrade_zip(package)
+        result["package"] = str(package)
+        return jsonify({"ok": True, "data": result})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 

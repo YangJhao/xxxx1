@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 import psutil
 from flask import Blueprint, jsonify, request
+from sqlalchemy.orm import joinedload
 
 from models import Line, PROTOCOL_TYPES, ProxyUser, SS_METHODS, get_session
 from routes.auth import login_required
@@ -27,7 +28,7 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_\-]{3,48}$")
 TESTABLE_UDP_PROTOCOLS = {"socks5", "ss", "hysteria2"}
 RANDOM_PORT_MIN = 10000
 RANDOM_PORT_MAX = 59999
-DEFAULT_SPEED_LIMIT = "20mbit"
+DEFAULT_SPEED_LIMIT = "20m"
 DEFAULT_TRAFFIC_LIMIT = "130g"
 
 
@@ -38,7 +39,12 @@ def _gen_password(n: int = 12) -> str:
 
 def _selected_lines(session, line_id):
     if str(line_id).lower() == "all":
-        return session.query(Line).filter_by(status=1).order_by(Line.id).all()
+        return (
+            session.query(Line)
+            .filter((Line.status == 1) | (Line.name.like("%主网卡%")))
+            .order_by(Line.id)
+            .all()
+        )
     line = session.query(Line).get(int(line_id))
     return [line] if line else []
 
@@ -134,6 +140,37 @@ def _parse_expire(value):
         return datetime.fromisoformat(text.replace("/", "-"))
     except Exception:
         return None
+
+
+def _format_size_limit_text(total_bytes: int) -> str:
+    total = max(0, int(total_bytes or 0))
+    units = [("t", 1000**4), ("g", 1000**3), ("m", 1000**2), ("k", 1000)]
+    for suffix, size in units:
+        if total >= size and total % size == 0:
+            return f"{total // size}{suffix}"
+    if total >= 1000**3:
+        return f"{total / 1000**3:.2f}g".rstrip("0").rstrip(".")
+    if total >= 1000**2:
+        return f"{total / 1000**2:.2f}m".rstrip("0").rstrip(".")
+    return f"{total}b"
+
+
+def _normalize_speed_limit(value: str | None, default: str | None = None) -> str:
+    text = str(value or "").strip().lower().replace(" ", "")
+    if not text:
+        return default or ""
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return f"{text}m"
+    return text
+
+
+def _normalize_traffic_limit(value: str | None, default: str | None = None) -> str:
+    text = str(value or "").strip().lower().replace(" ", "")
+    if not text:
+        return default or ""
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return f"{text}g"
+    return text
 
 
 def _reload_proxy(session=None):
@@ -233,6 +270,57 @@ def _format_bps(bytes_per_second: int) -> str:
         value /= 1024
         idx += 1
     return f"{value:.2f} {units[idx]}"
+
+
+def _is_port_listening(port: int, protocol: str | None = None) -> bool:
+    try:
+        targets = {"tcp"}
+        if (protocol or "").lower() in TESTABLE_UDP_PROTOCOLS:
+            targets.add("udp")
+        if "tcp" in targets:
+            for conn in psutil.net_connections(kind="tcp"):
+                if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == int(port):
+                    return True
+        if "udp" in targets:
+            for conn in psutil.net_connections(kind="udp"):
+                if conn.laddr and conn.laddr.port == int(port):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _created_apply_status(users: list[ProxyUser]) -> dict:
+    ports = sorted({int(u.listen_port or u.line.get_port_by_protocol(u.protocol)) for u in users if u.line})
+    missing = []
+    for port in ports:
+        sample = next((u for u in users if int(u.listen_port or u.line.get_port_by_protocol(u.protocol)) == port), None)
+        if sample and not _is_port_listening(port, sample.protocol):
+            missing.append(port)
+    return {
+        "applied": not missing,
+        "missing_ports": missing,
+        "restarted": False,
+        "message": "" if not missing else f"端口 {', '.join(map(str, missing[:8]))} 尚未被 sing-box 监听，需要应用配置",
+    }
+
+
+def _ensure_created_applied(users: list[ProxyUser]) -> dict:
+    status = _created_apply_status(users)
+    if status["applied"]:
+        return status
+    try:
+        proxy_manager.restart_config()
+        time.sleep(2)
+        status = _created_apply_status(users)
+        status["restarted"] = True
+        if status["applied"]:
+            status["message"] = "配置已自动应用"
+        else:
+            status["message"] = f"端口 {', '.join(map(str, status['missing_ports'][:8]))} 仍未监听，请检查 sing-box 日志"
+    except Exception as exc:
+        status["message"] = f"自动应用配置失败：{exc}"
+    return status
 
 
 def _interface_for_line(line: Line) -> str | None:
@@ -429,8 +517,8 @@ def _create_user_v3():
     ss_method = (data.get("ss_method") or "aes-256-gcm").strip()
     line_id = data.get("line_id") or data.get("ip") or data.get("ip_select") or "all"
     expire_at_str = data.get("expire_at") or ""
-    speed_limit = (data.get("speed_limit") or DEFAULT_SPEED_LIMIT).strip()
-    traffic_limit = (data.get("traffic_limit") or DEFAULT_TRAFFIC_LIMIT).strip()
+    speed_limit = _normalize_speed_limit(data.get("speed_limit"), DEFAULT_SPEED_LIMIT)
+    traffic_limit = _normalize_traffic_limit(data.get("traffic_limit"), DEFAULT_TRAFFIC_LIMIT)
     owner_name = (data.get("owner_name") or data.get("owner") or "").strip()
     project_name = (data.get("project_name") or data.get("project") or "").strip()
     custom_port = data.get("custom_port")
@@ -474,13 +562,21 @@ def _create_user_v3():
             forced_port = int(custom_port)
             if not (1024 < forced_port < 65536):
                 return jsonify({"ok": False, "error": "端口范围错误"}), 400
-            if str(line_id).lower() == "all":
-                return jsonify({"ok": False, "error": "全部 IP 创建时不能使用同一个自定义端口"}), 400
-            if forced_port in used_ports:
-                return jsonify({"ok": False, "error": "端口已被占用"}), 400
-            used_ports.add(forced_port)
+            if str(line_id).lower() != "all":
+                exists = (
+                    s.query(ProxyUser)
+                    .filter(
+                        ProxyUser.line_id == lines[0].id,
+                        ProxyUser.protocol == protocol,
+                        ProxyUser.listen_port == forced_port,
+                    )
+                    .first()
+                )
+                if exists:
+                    return jsonify({"ok": False, "error": "该线路端口已被占用"}), 400
 
         created = []
+        skipped = []
         errors = []
         for line in lines:
             if len(created) >= count:
@@ -489,12 +585,27 @@ def _create_user_v3():
             if _assignment_exists(s, line.id, assignment_owner, project_name):
                 msg = f"{line.name} / {line.public_ip}: 用户 {assignment_owner or '-'} + 项目 {project_name or '-'} 已创建，已跳过"
                 if skip_existing:
-                    errors.append(msg)
+                    skipped.append(msg)
                     continue
                 return jsonify({"ok": False, "error": msg}), 400
             username = base_username
 
-            listen_port = forced_port if forced_port else _random_available_port(s, used_ports)
+            if forced_port:
+                exists = (
+                    s.query(ProxyUser)
+                    .filter(
+                        ProxyUser.line_id == line.id,
+                        ProxyUser.protocol == protocol,
+                        ProxyUser.listen_port == forced_port,
+                    )
+                    .first()
+                )
+                if exists:
+                    skipped.append(f"{line.name} / {line.public_ip}: 端口 {forced_port} 已被该线路占用，已跳过")
+                    continue
+                listen_port = forced_port
+            else:
+                listen_port = _random_available_port(s, used_ports)
             user_password = str(uuid.uuid4()) if protocol == "vless" and not data.get("password") else password
             user = ProxyUser(
                 username=username,
@@ -518,7 +629,8 @@ def _create_user_v3():
             errors.append(f"节点不足：需要 {count} 个，实际创建 {len(created)} 个，缺少 {count - len(created)} 个")
 
         if not created:
-            detail = "；".join(errors[:3]) if errors else "没有可用线路"
+            details = errors or skipped
+            detail = "；".join(details[:3]) if details else "没有可用线路"
             return jsonify({"ok": False, "error": f"未创建任何节点：{detail}"}), 400
 
         s.commit()
@@ -530,9 +642,12 @@ def _create_user_v3():
         result = {
             "created": [u.to_dict() for u in created],
             "created_count": len(created),
+            "skipped": skipped,
+            "skipped_count": len(skipped),
             "errors": errors,
             "limits": [{"ok": True, "queued": True, "user_id": uid} for uid in limited_ids],
             "limit_queued": len(limited_ids),
+            "apply_status": _ensure_created_applied(created),
         }
         if len(created) == 1:
             result.update(created[0].to_dict())
@@ -570,7 +685,6 @@ def _limit_info_for_user(user: ProxyUser, measured_mbps=None) -> dict:
 def list_users():
     s = get_session()
     try:
-        collect_once()
         connection_snapshot = snapshot_connections()
         expired = _apply_expire_limits(s)
         traffic_disabled = _apply_traffic_limits(s)
@@ -580,7 +694,7 @@ def list_users():
         line_id = request.args.get("line_id", type=int)
         if line_id:
             q = q.filter(ProxyUser.line_id == line_id)
-        users = q.order_by(ProxyUser.id.desc()).all()
+        users = q.options(joinedload(ProxyUser.line)).order_by(ProxyUser.id.desc()).all()
         rows = []
         for user in users:
             item = user.to_dict()
@@ -725,6 +839,56 @@ def batch_assign_project():
         s.close()
 
 
+@bp.route("/batch-edit-limits", methods=["POST"])
+@login_required
+def batch_edit_limits():
+    data = request.get_json(silent=True) or {}
+    raw_ids = data.get("ids") or []
+    ids = []
+    for value in raw_ids:
+        if str(value).isdigit():
+            uid = int(value)
+            if uid > 0 and uid not in ids:
+                ids.append(uid)
+    speed_limit = _normalize_speed_limit(data.get("speed_limit"))
+    set_traffic = _normalize_traffic_limit(data.get("set_traffic") or data.get("add_traffic"))
+    if not ids:
+        return jsonify({"ok": False, "error": "请选择节点"}), 400
+    if not speed_limit and not set_traffic:
+        return jsonify({"ok": False, "error": "请输入限速或设置流量"}), 400
+    set_bytes = None
+    if set_traffic:
+        set_bytes = parse_size_to_bytes(set_traffic)
+        if not set_bytes:
+            return jsonify({"ok": False, "error": "设置流量格式不正确，例如 20g"}), 400
+    s = get_session()
+    try:
+        users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all()
+        if len(users) != len(ids):
+            found_ids = {user.id for user in users}
+            missing_ids = [uid for uid in ids if uid not in found_ids]
+            return jsonify({"ok": False, "error": f"部分节点不存在: {missing_ids[:10]}"}), 400
+        limit_ids = []
+        clear_ids = []
+        for user in users:
+            old_limit_enabled = bool(parse_speed_to_bps(user.speed_limit))
+            if speed_limit:
+                user.speed_limit = speed_limit
+            if set_bytes:
+                user.traffic_limit = _format_size_limit_text(set_bytes)
+            if old_limit_enabled:
+                clear_ids.append(user.id)
+            if user.status and parse_speed_to_bps(user.speed_limit):
+                limit_ids.append(user.id)
+        s.commit()
+        _reload_proxy(s)
+        _clear_user_limits_background(clear_ids)
+        _apply_user_limits_background(limit_ids)
+        return jsonify({"ok": True, "data": {"updated": len(users), "updated_ids": ids, "limit_queued": len(limit_ids)}})
+    finally:
+        s.close()
+
+
 @bp.route("/batch-renew", methods=["POST"])
 @login_required
 def batch_renew():
@@ -749,6 +913,8 @@ def batch_renew():
                 user.expire_at = base + timedelta(days=days)
             else:
                 user.expire_at = expire_at
+            user.bytes_in = 0
+            user.bytes_out = 0
             if user.status == 0:
                 user.status = 1
                 if parse_speed_to_bps(user.speed_limit):
@@ -777,6 +943,111 @@ def delete_user(uid):
         _reload_proxy(s)
         _clear_user_limits_background(limit_ids)
         return jsonify({"ok": True})
+    finally:
+        s.close()
+
+
+@bp.route("/<int:uid>", methods=["PUT"])
+@login_required
+def update_user(uid):
+    data = request.get_json(silent=True) or {}
+    s = get_session()
+    try:
+        user = s.query(ProxyUser).get(uid)
+        if not user:
+            return jsonify({"ok": False, "error": "节点不存在"}), 404
+
+        if data.get("edit_limits_only"):
+            old_limit_enabled = bool(parse_speed_to_bps(user.speed_limit))
+            speed_limit = _normalize_speed_limit(data.get("speed_limit"))
+            set_traffic = _normalize_traffic_limit(data.get("set_traffic") or data.get("add_traffic"))
+
+            if speed_limit:
+                user.speed_limit = speed_limit
+
+            if set_traffic:
+                set_bytes = parse_size_to_bytes(set_traffic)
+                if not set_bytes:
+                    return jsonify({"ok": False, "error": "设置流量格式不正确，例如 20g"}), 400
+                user.traffic_limit = _format_size_limit_text(set_bytes)
+
+            s.commit()
+            s.refresh(user)
+            _reload_proxy(s)
+            if old_limit_enabled:
+                _clear_user_limits_background([user.id])
+            if user.status and parse_speed_to_bps(user.speed_limit):
+                _apply_user_limits_background([user.id])
+            return jsonify({"ok": True, "data": user.to_dict()})
+
+        proto = _normalize_protocol(data.get("protocol") or user.protocol)
+        if proto not in PROTOCOL_TYPES:
+            return jsonify({"ok": False, "error": "不支持的协议"}), 400
+
+        line_id = data.get("line_id", user.line_id)
+        try:
+            line_id = int(line_id)
+        except Exception:
+            return jsonify({"ok": False, "error": "请选择有效线路"}), 400
+        line = s.query(Line).get(line_id)
+        if not line:
+            return jsonify({"ok": False, "error": "线路不存在"}), 404
+
+        listen_port = data.get("custom_port", data.get("listen_port", user.listen_port))
+        if listen_port in ("", None):
+            listen_port = user.listen_port or line.get_port_by_protocol(proto)
+        try:
+            listen_port = int(listen_port)
+        except Exception:
+            return jsonify({"ok": False, "error": "端口不正确"}), 400
+        if listen_port < 1 or listen_port > 65535:
+            return jsonify({"ok": False, "error": "端口范围必须是 1-65535"}), 400
+        exists = s.query(ProxyUser).filter(ProxyUser.id != uid, ProxyUser.listen_port == listen_port).first()
+        if exists:
+            return jsonify({"ok": False, "error": f"端口 {listen_port} 已被其他节点使用"}), 400
+
+        username = (data.get("username") or user.username or "").strip()
+        password = (data.get("password") or user.password or "").strip()
+        if proto == "ss":
+            username = username or "ss"
+            ss_method = (data.get("ss_method") or user.ss_method or SS_METHODS[0]).strip()
+            if ss_method not in SS_METHODS:
+                return jsonify({"ok": False, "error": "不支持的 SS 加密方式"}), 400
+            ss_password = (data.get("ss_password") or password or user.ss_password or user.password or "").strip()
+            if not ss_password:
+                return jsonify({"ok": False, "error": "请输入 SS 密码"}), 400
+            user.ss_method = ss_method
+            user.ss_password = ss_password
+            password = ss_password
+        else:
+            if not username:
+                return jsonify({"ok": False, "error": "请输入账号"}), 400
+            if not password:
+                return jsonify({"ok": False, "error": "请输入密码"}), 400
+            user.ss_method = None
+            user.ss_password = None
+
+        old_limit_enabled = bool(parse_speed_to_bps(user.speed_limit))
+        user.line_id = line.id
+        user.protocol = proto
+        user.listen_port = listen_port
+        user.username = username
+        user.password = password
+        user.owner_name = (data.get("owner_name") or "").strip()
+        user.project_name = (data.get("project_name") or "").strip()
+        user.speed_limit = _normalize_speed_limit(data.get("speed_limit"), DEFAULT_SPEED_LIMIT)
+        user.traffic_limit = _normalize_traffic_limit(data.get("traffic_limit"), DEFAULT_TRAFFIC_LIMIT)
+        user.note = (data.get("note") or "").strip()
+        user.expire_at = _parse_expire(data.get("expire_at")) if data.get("expire_at") else None
+
+        s.commit()
+        s.refresh(user)
+        _reload_proxy(s)
+        if old_limit_enabled:
+            _clear_user_limits_background([user.id])
+        if user.status and parse_speed_to_bps(user.speed_limit):
+            _apply_user_limits_background([user.id])
+        return jsonify({"ok": True, "data": user.to_dict()})
     finally:
         s.close()
 

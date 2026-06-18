@@ -17,15 +17,16 @@ from models import ProxyUser, TrafficLog, get_session
 CLASH_CONNECTIONS_URL = "http://127.0.0.1:9090/connections"
 _last_conn_totals: dict[str, tuple[int, int, int]] = {}
 _last_snapshot: dict[int, dict] = {}
+_last_snapshot_ts = 0.0
 
 
 def _user_tag(user: ProxyUser) -> str:
     return f"in-{user.protocol}-user-{user.id}"
 
 
-def _fetch_connections() -> list[dict]:
+def _fetch_connections(timeout: float = 3) -> list[dict]:
     req = urllib.request.Request(CLASH_CONNECTIONS_URL, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=3) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8", errors="ignore"))
     return data.get("connections") or []
 
@@ -54,6 +55,11 @@ def _connection_tag(conn: dict) -> str:
 
 def snapshot_connections() -> dict[int, dict]:
     """Return current active connection counts and bytes by ProxyUser id."""
+    global _last_snapshot_ts
+    now = time.time()
+    if _last_snapshot and now - _last_snapshot_ts < 1.5:
+        return _last_snapshot.copy()
+
     session = get_session()
     try:
       users = { _user_tag(u): u.id for u in session.query(ProxyUser).all() }
@@ -62,7 +68,7 @@ def snapshot_connections() -> dict[int, dict]:
 
     result: dict[int, dict] = {}
     try:
-        connections = _fetch_connections()
+        connections = _fetch_connections(timeout=0.5)
     except Exception:
         return _last_snapshot.copy()
 
@@ -77,6 +83,7 @@ def snapshot_connections() -> dict[int, dict]:
 
     _last_snapshot.clear()
     _last_snapshot.update(result)
+    _last_snapshot_ts = now
     return result
 
 
@@ -124,6 +131,8 @@ def collect_once() -> dict:
 
     _last_snapshot.clear()
     _last_snapshot.update(snapshot)
+    global _last_snapshot_ts
+    _last_snapshot_ts = time.time()
 
     session = get_session()
     updated = 0

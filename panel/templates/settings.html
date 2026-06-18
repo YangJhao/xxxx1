@@ -65,6 +65,23 @@
     </div>
   </div>
 
+  <div class="col-md-6">
+    <div class="card-dark">
+      <h5><i class="bi bi-cloud-arrow-up"></i> 在线升级</h5>
+      <p class="form-hint">上传新版 zip 包，或填写升级包 URL。升级前会自动备份被覆盖的程序文件，data 数据目录不会被覆盖。</p>
+      <div class="input-group mb-2">
+        <input class="form-control" id="upgradeUrl" placeholder="https://example.com/42ipwin-upgrade.zip">
+        <button class="btn btn-primary" id="btnUpgradeUrl"><i class="bi bi-cloud-download"></i> URL 升级</button>
+      </div>
+      <div class="d-flex gap-2 flex-wrap">
+        <button class="btn btn-soft" id="btnPickUpgrade"><i class="bi bi-upload"></i> 上传升级包</button>
+        <button class="btn btn-warning" id="btnRestartPanel"><i class="bi bi-arrow-repeat"></i> 重启面板</button>
+        <input class="d-none" id="upgradeFile" type="file" accept=".zip">
+      </div>
+      <div class="form-hint mt-2" id="upgradeResult">当前版本: {{ app_version }}</div>
+    </div>
+  </div>
+
 </div>
 {% endblock %}
 
@@ -138,6 +155,74 @@ function pickRestoreFile() {
   $('#restoreFile').val('').trigger('click');
 }
 
+function upgradeSummary(data) {
+  if (!data) return '升级完成';
+  return `升级完成：覆盖 ${data.applied_count || 0} 个文件，跳过 ${data.skipped_count || 0} 个文件。备份: ${data.backup || '-'}`;
+}
+
+async function restartPanel() {
+  if (!confirm('确定重启面板？页面会短暂断开，3-5 秒后刷新即可。')) return;
+  const r = await api.post('/api/settings/restart-panel', {});
+  toast(r.ok ? '面板正在重启，请稍后刷新页面' : (r.error || '操作失败'), r.ok ? 'success' : 'error', 5000);
+  if (r.ok) setTimeout(() => location.reload(), 5000);
+}
+
+async function upgradeByUrl() {
+  const url = $('#upgradeUrl').val().trim();
+  if (!url) return toast('请输入升级包 URL', 'error');
+  if (!confirm('确定从该 URL 下载并升级？升级前会自动备份程序文件。')) return;
+  $('#btnUpgradeUrl').prop('disabled', true);
+  $('#upgradeResult').text('正在下载并升级...');
+  try {
+    const r = await api.post('/api/settings/upgrade-url', { url });
+    if (!r.ok) {
+      $('#upgradeResult').text(r.error || '升级失败');
+      return toast(r.error || '升级失败', 'error', 8000);
+    }
+    const text = upgradeSummary(r.data);
+    $('#upgradeResult').text(text);
+    toast(`${text} 请重启面板服务生效。`, 'success', 8000);
+    await loadBackups();
+  } finally {
+    $('#btnUpgradeUrl').prop('disabled', false);
+  }
+}
+
+function pickUpgradeFile() {
+  $('#upgradeFile').val('').trigger('click');
+}
+
+async function upgradeByFile() {
+  const file = document.getElementById('upgradeFile').files[0];
+  if (!file) return;
+  if (!confirm(`确定上传并升级 ${file.name}？升级前会自动备份程序文件。`)) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  $('#btnPickUpgrade').prop('disabled', true);
+  $('#upgradeResult').text('正在上传并升级...');
+  try {
+    const resp = await fetch('/api/settings/upgrade', { method: 'POST', body: fd });
+    if (resp.status === 401) {
+      location.href = '/login';
+      return;
+    }
+    const r = await resp.json();
+    if (!r.ok) {
+      $('#upgradeResult').text(r.error || '升级失败');
+      return toast(r.error || '升级失败', 'error', 8000);
+    }
+    const text = upgradeSummary(r.data);
+    $('#upgradeResult').text(text);
+    toast(`${text} 请重启面板服务生效。`, 'success', 8000);
+    await loadBackups();
+  } catch (e) {
+    $('#upgradeResult').text(e.message || '升级失败');
+    toast(e.message || '升级失败', 'error', 8000);
+  } finally {
+    $('#btnPickUpgrade').prop('disabled', false);
+  }
+}
+
 async function restoreData() {
   const file = document.getElementById('restoreFile').files[0];
   if (!file) return;
@@ -170,6 +255,10 @@ $(async () => {
   $('#btnServiceStart').on('click', () => serviceAction('start'));
   $('#btnServiceStop').on('click', () => serviceAction('stop'));
   $('#btnServiceReload').on('click', () => serviceAction('reload'));
+  $('#btnUpgradeUrl').on('click', upgradeByUrl);
+  $('#btnPickUpgrade').on('click', pickUpgradeFile);
+  $('#upgradeFile').on('change', upgradeByFile);
+  $('#btnRestartPanel').on('click', restartPanel);
   $('#btnPickRestore').on('click', pickRestoreFile);
   $('#restoreFile').on('change', restoreData);
   setInterval(loadServiceStatus, 10000);

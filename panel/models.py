@@ -93,7 +93,7 @@ class ProxyUser(Base):
     ss_password = Column(String(128), nullable=True)
     line_id = Column(Integer, ForeignKey("lines.id"), nullable=False)
     protocol = Column(String(16), default="socks5")
-    listen_port = Column(Integer, nullable=True, unique=True)
+    listen_port = Column(Integer, nullable=True)
     ss_method = Column(String(32), nullable=True)
     owner_name = Column(String(96), nullable=True)
     project_name = Column(String(96), nullable=True)
@@ -394,11 +394,13 @@ def _migrate_db():
                 if "duplicate" not in msg and "already" not in msg and "exist" not in msg:
                     print(f"[migrate] ! admin_users.{col_name}: {e}")
 
-    # Older installs had proxy_users.username as a global UNIQUE column. Rebuild the
-    # SQLite table once so the same account can be reused on different lines.
+    # Older installs had global UNIQUE indexes on proxy_users.username or
+    # proxy_users.listen_port. Rebuild once so accounts and ports can be reused on
+    # different lines/IPs.
     with engine.begin() as conn:
         indexes = conn.execute(text("PRAGMA index_list(proxy_users)")).fetchall()
         has_username_unique = False
+        has_listen_port_unique = False
         for idx in indexes:
             idx_name = idx[1]
             is_unique = bool(idx[2])
@@ -407,8 +409,9 @@ def _migrate_db():
             cols = conn.execute(text(f"PRAGMA index_info({idx_name})")).fetchall()
             if [c[2] for c in cols] == ["username"]:
                 has_username_unique = True
-                break
-        if has_username_unique:
+            if [c[2] for c in cols] == ["listen_port"]:
+                has_listen_port_unique = True
+        if has_username_unique or has_listen_port_unique:
             conn.execute(text("""
                 CREATE TABLE proxy_users_new (
                     id INTEGER NOT NULL PRIMARY KEY,
@@ -417,7 +420,10 @@ def _migrate_db():
                     ss_password TEXT,
                     line_id INTEGER NOT NULL,
                     protocol TEXT DEFAULT 'socks5',
+                    listen_port INTEGER,
                     ss_method TEXT,
+                    owner_name TEXT,
+                    project_name TEXT,
                     speed_limit TEXT,
                     traffic_limit TEXT,
                     status INTEGER,
@@ -431,20 +437,19 @@ def _migrate_db():
             """))
             conn.execute(text("""
                 INSERT INTO proxy_users_new (
-                    id, username, password, ss_password, line_id, protocol, ss_method,
-                    speed_limit, traffic_limit, status, expire_at, bytes_in, bytes_out,
-                    note, created_at
+                    id, username, password, ss_password, line_id, protocol, listen_port,
+                    ss_method, owner_name, project_name, speed_limit, traffic_limit,
+                    status, expire_at, bytes_in, bytes_out, note, created_at
                 )
                 SELECT
-                    id, username, password, ss_password, line_id, protocol, ss_method,
-                    speed_limit, traffic_limit, status, expire_at, bytes_in, bytes_out,
-                    note, created_at
+                    id, username, password, ss_password, line_id, protocol, listen_port,
+                    ss_method, owner_name, project_name, speed_limit, traffic_limit,
+                    status, expire_at, bytes_in, bytes_out, note, created_at
                 FROM proxy_users
             """))
             conn.execute(text("DROP TABLE proxy_users"))
             conn.execute(text("ALTER TABLE proxy_users_new RENAME TO proxy_users"))
-            print("[migrate] proxy_users.username global unique removed")
-
+            print("[migrate] proxy_users global unique username/listen_port removed")
 
 def init_db():
     Base.metadata.create_all(engine)

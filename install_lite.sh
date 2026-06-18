@@ -74,11 +74,31 @@ install_sing_box_optional() {
 }
 
 install_service() {
+  cat >/etc/systemd/system/42ipwin-macvlans.service <<EOF
+[Unit]
+Description=42IPwin Restore macvlan adapters
+After=network-online.target
+Wants=network-online.target
+Before=42ipwin.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=${APP_DIR}
+ExecStart=/usr/bin/${PYTHON_BIN} ${APP_DIR}/restore_macvlans.py
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   cat >/etc/systemd/system/42ipwin.service <<EOF
 [Unit]
 Description=42IPwin Small Panel
 After=network-online.target
 Wants=network-online.target
+Requires=42ipwin-macvlans.service
+After=42ipwin-macvlans.service
 
 [Service]
 Type=simple
@@ -96,6 +116,7 @@ OOMScoreAdjust=500
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
+  systemctl enable 42ipwin-macvlans
   systemctl enable --now 42ipwin
 }
 

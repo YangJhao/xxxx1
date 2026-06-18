@@ -12,7 +12,7 @@ PERMISSION_ITEMS = [
     {"key": "lines", "label": "线路管理", "path": "/lines"},
     {"key": "nodes", "label": "节点列表", "path": "/nodes"},
     {"key": "customers", "label": "客户管理", "path": "/customers"},
-    {"key": "pve", "label": "PVE", "path": "/pve"},
+    {"key": "pve", "label": "HV虚拟机", "path": "/hyperv"},
     {"key": "logs", "label": "操作日志", "path": "/operation-logs"},
     {"key": "settings", "label": "系统设置", "path": "/settings"},
     {"key": "admin_users", "label": "用户管理", "path": "/admin-users"},
@@ -40,9 +40,10 @@ def current_permissions() -> set[str]:
     admin = _current_admin()
     if not admin:
         return set()
-    if admin.is_super:
+    permissions = getattr(admin, "permissions", None)
+    if admin.is_super or permissions is None:
         return set(ALL_PERMISSION_KEYS)
-    return set(_split_permissions(admin.permissions))
+    return set(_split_permissions(permissions))
 
 
 def has_permission(key: str) -> bool:

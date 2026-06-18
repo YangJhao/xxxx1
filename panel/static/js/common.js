@@ -62,33 +62,87 @@ window.escapeHtml = function (value) {
 };
 
 function legacyCopy(value) {
+  const previousFocus = document.activeElement;
+  const selection = document.getSelection();
+  const ranges = [];
+  if (selection) {
+    for (let i = 0; i < selection.rangeCount; i += 1) ranges.push(selection.getRangeAt(i));
+  }
   const ta = document.createElement('textarea');
   ta.value = value;
   ta.setAttribute('readonly', '');
   ta.style.position = 'fixed';
-  ta.style.left = '0';
+  ta.style.left = '-9999px';
   ta.style.top = '0';
-  ta.style.width = '1px';
-  ta.style.height = '1px';
-  ta.style.opacity = '0';
+  ta.style.width = '2px';
+  ta.style.height = '2px';
+  ta.style.opacity = '0.01';
+  ta.style.zIndex = '2147483647';
   document.body.appendChild(ta);
-  ta.focus();
-  ta.select();
-  ta.setSelectionRange(0, value.length);
   let ok = false;
   try {
+    ta.focus({ preventScroll: true });
+    ta.select();
+    ta.setSelectionRange(0, value.length);
     ok = document.execCommand('copy');
   } finally {
     ta.remove();
+    if (selection) {
+      selection.removeAllRanges();
+      ranges.forEach(range => selection.addRange(range));
+    }
+    if (previousFocus && previousFocus.focus) {
+      try { previousFocus.focus({ preventScroll: true }); } catch (e) { previousFocus.focus(); }
+    }
   }
   return ok;
 }
+
+window.copyElementText = async function (elementOrId) {
+  const el = typeof elementOrId === 'string' ? document.getElementById(elementOrId) : elementOrId;
+  const value = String(el ? (el.innerText || el.textContent || '') : '').trim();
+  if (!value) {
+    toast('没有可复制的内容', 'error');
+    return false;
+  }
+
+  if (el) {
+    const selection = document.getSelection();
+    const previousRanges = [];
+    if (selection) {
+      for (let i = 0; i < selection.rangeCount; i += 1) previousRanges.push(selection.getRangeAt(i));
+    }
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (document.execCommand('copy')) {
+        toast('已复制到剪贴板', 'success');
+        return true;
+      }
+    } catch (e) {
+      // Fallback below.
+    } finally {
+      if (selection) {
+        selection.removeAllRanges();
+        previousRanges.forEach(range => selection.addRange(range));
+      }
+    }
+  }
+  return copyText(value);
+};
 
 window.copyText = async function (text) {
   const value = String(text || '').trim();
   if (!value) {
     toast('没有可复制的内容', 'error');
     return false;
+  }
+
+  if (legacyCopy(value)) {
+    toast('已复制到剪贴板', 'success');
+    return true;
   }
 
   try {
@@ -99,11 +153,6 @@ window.copyText = async function (text) {
     }
   } catch (e) {
     // Fallback below.
-  }
-
-  if (legacyCopy(value)) {
-    toast('已复制到剪贴板', 'success');
-    return true;
   }
 
   toast('浏览器禁止自动复制，请点击复制按钮后再试', 'error', 4000);

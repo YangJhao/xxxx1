@@ -5,6 +5,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -33,6 +35,12 @@ def _is_running(pid: int | None) -> bool:
         return False
     try:
         if os.name != "nt":
+            stat_path = f"/proc/{pid}/stat"
+            if os.path.exists(stat_path):
+                with open(stat_path, "r", encoding="utf-8") as f:
+                    fields = f.read().split()
+                if len(fields) > 2 and fields[2] == "Z":
+                    return False
             os.kill(pid, 0)
             return True
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
@@ -87,6 +95,9 @@ def start():
     proc = subprocess.Popen([SING_BOX_EXE, "run", "-c", SING_BOX_CFG], **kwargs)
     _write_pid(proc.pid)
     time.sleep(1.5)
+    return_code = proc.poll()
+    if return_code is not None:
+        raise RuntimeError(f"sing-box 启动后立即退出，退出码 {return_code}")
     return proc.pid
 
 
@@ -96,6 +107,28 @@ def ensure_running():
         _write_pid(running_pid)
         return running_pid
     return start()
+
+
+def _hot_reload_config() -> bool:
+    body = b'{"path": "' + SING_BOX_CFG.replace("\\", "\\\\").encode("utf-8") + b'"}'
+    urls = [
+        "http://127.0.0.1:9090/configs?force=true",
+        "http://127.0.0.1:9090/configs",
+    ]
+    for url in urls:
+        try:
+            req = urllib.request.Request(
+                url,
+                data=body,
+                method="PUT",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if 200 <= resp.status < 300:
+                    return True
+        except (urllib.error.URLError, TimeoutError, OSError):
+            pass
+    return False
 
 
 def stop():
@@ -115,8 +148,19 @@ def stop():
 
 
 def reload_config():
-    if get_status()["running"]:
-        stop()
+    write_cfg()
+    status = get_status()
+    if not status["running"]:
+        return start()
+    if _hot_reload_config():
+        return status["pid"]
+    stop()
+    return start()
+
+
+def restart_config():
+    write_cfg()
+    stop()
     return start()
 
 

@@ -32,6 +32,7 @@
       <button class="btn btn-danger" id="btnCleanExpired"><i class="bi bi-calendar-x"></i> 清理到期</button>
       <button class="btn btn-warning" id="btnBatchStop"><i class="bi bi-pause-circle"></i> 批量停止</button>
       <button class="btn btn-danger" id="btnBatchDelete"><i class="bi bi-trash3"></i> 批量删除</button>
+      <button class="btn btn-soft" id="btnBatchEditLimits"><i class="bi bi-sliders"></i> 批量编辑</button>
       <button class="btn btn-soft" id="btnAssignUser"><i class="bi bi-person-check"></i> 分配用户</button>
       <button class="btn btn-soft" id="btnAssignProject"><i class="bi bi-folder-check"></i> 分配项目</button>
       <button class="btn btn-soft" id="btnRenew"><i class="bi bi-calendar-plus"></i> 续费</button>
@@ -74,7 +75,6 @@
           <th>带宽</th>
           <th>流量</th>
           <th>到期</th>
-          <th>测试</th>
           <th>操作</th>
         </tr>
       </thead>
@@ -94,11 +94,65 @@
   </div>
 </div>
 
+<div class="modal fade" id="editLimitModal" tabindex="-1">
+  <div class="modal-dialog modal-md modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">编辑节点限制</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editLimitUserId">
+        <div class="mb-3">
+          <label class="form-label">限速</label>
+          <input class="form-control" id="editSpeedLimit" placeholder="填 20 就是 20m，留空不修改">
+        </div>
+        <div>
+          <label class="form-label">设置流量</label>
+          <input class="form-control" id="editAddTraffic" placeholder="填 20 就是 20g，留空不修改">
+          <div class="form-hint" id="editTrafficHint">当前流量限制：-</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveLimitEdit">保存</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="batchLimitModal" tabindex="-1">
+  <div class="modal-dialog modal-md modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">批量编辑限制</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="batch-match-hint mb-3" id="batchLimitHint">已选择 0 个节点</div>
+        <div class="mb-3">
+          <label class="form-label">限速</label>
+          <input class="form-control" id="batchSpeedLimit" placeholder="填 20 就是 20m，留空不修改">
+        </div>
+        <div>
+          <label class="form-label">设置流量</label>
+          <input class="form-control" id="batchAddTraffic" placeholder="填 20 就是 20g，留空不修改">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnConfirmBatchLimit">保存</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="userModal" tabindex="-1">
   <div class="modal-dialog modal-xl modal-dialog-centered">
     <div class="modal-content modal-dark create-node-modal">
-      <div class="modal-header create-modal-head"><h5 class="modal-title">批量创建入站</h5><button class="btn btn-soft" data-bs-dismiss="modal">关闭</button></div>
+      <div class="modal-header create-modal-head"><h5 class="modal-title" id="userModalTitle">批量创建入站</h5><button class="btn btn-soft" data-bs-dismiss="modal">关闭</button></div>
       <div class="modal-body"><form id="userForm"><div class="create-form-grid">
+        <input type="hidden" id="editingUserId">
         <div><label class="form-label">项目</label><select class="form-select" id="userProject" required></select></div>
         <div><label class="form-label">节点分类</label><select class="form-select" id="userLine" required></select></div>
         <div><label class="form-label">归属用户</label><input class="form-control" id="userOwner" list="ownerOptions" placeholder="输入用户名，可自动筛选"><datalist id="ownerOptions"></datalist></div>
@@ -106,7 +160,7 @@
         <div class="custom-port-wrap"><label class="form-label">自定义端口</label><input class="form-control" id="userCustomPort" type="number" min="1025" max="65535" placeholder="留空随机 20000-50000"></div>
         <div><label class="form-label" id="accountLabel">协议账号</label><input class="form-control account-field" id="userUsername" placeholder="留空自动生成"><select class="form-select ss-method-field d-none" id="userSsMethod"><option value="aes-256-gcm">aes-256-gcm</option><option value="aes-128-gcm">aes-128-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option><option value="aes-256-cfb">aes-256-cfb</option><option value="aes-128-cfb">aes-128-cfb</option><option value="rc4-md5">rc4-md5</option></select></div>
         <div><label class="form-label" id="passwordLabel">密码</label><input class="form-control" id="userPassword" placeholder="留空自动生成"></div>
-        <div><label class="form-label">限速</label><input class="form-control" id="userSpeedLimit" value="20mbit" placeholder="默认 20mbit"></div>
+        <div><label class="form-label">限速</label><input class="form-control" id="userSpeedLimit" value="20m" placeholder="默认 20m，填 20 就是 20m"></div>
         <div><label class="form-label">限制流量</label><input class="form-control" id="userTrafficLimit" value="130g" placeholder="默认 130g"></div>
         <div class="expire-field">
           <label class="form-label">到期时间</label>
@@ -123,7 +177,7 @@
         <div><label class="form-label">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"></div>
         <div><label class="form-label">备注</label><input class="form-control" id="userNote" placeholder="写入 XUI 备注"></div>
       </div></form></div>
-      <div class="modal-footer create-modal-footer"><div class="form-check form-switch skip-switch"><input class="form-check-input" type="checkbox" role="switch" id="userSkipExisting" checked><label class="form-check-label" for="userSkipExisting">跳过重复</label></div><button class="btn btn-primary create-submit" id="btnSaveUser">创建</button><button class="btn btn-soft" data-bs-dismiss="modal">取消</button></div>
+      <div class="modal-footer create-modal-footer"><div class="form-check form-switch skip-switch" id="skipExistingWrap"><input class="form-check-input" type="checkbox" role="switch" id="userSkipExisting" checked><label class="form-check-label" for="userSkipExisting">跳过重复</label></div><button class="btn btn-primary create-submit" id="btnSaveUser">创建</button><button class="btn btn-soft" data-bs-dismiss="modal">取消</button></div>
     </div>
   </div>
 </div>
@@ -176,6 +230,7 @@
         <pre class="create-result-box" id="createResultBox"></pre>
       </div>
       <div class="modal-footer">
+        <button class="btn btn-warning d-none" id="btnApplyProxyConfig">应用配置</button>
         <button class="btn btn-primary" id="btnCopyCreateResult">一键复制</button>
         <button class="btn btn-primary" id="btnDownloadCreateCsv">下载 CSV</button>
         <button class="btn btn-soft" data-bs-dismiss="modal">关闭</button>
@@ -299,6 +354,7 @@ let currentPage = 1;
 let statusFilter = "all";
 let lastCreateResultText = '';
 let lastCreateResultCsv = '';
+let pendingBatchLimitIds = [];
 const PROTO_LABELS = { socks5: 'SK5', http: 'HTTP', ss: 'SS', vless: 'VLESS', trojan: 'Trojan', hysteria2: 'HY2' };
 
 async function loadLines() {
@@ -407,15 +463,21 @@ function createResultCsv(rows) {
 function showCreateResult(data) {
   const rows = data.created || [];
   const errors = data.errors || [];
+  const skipped = data.skipped || [];
+  const applyStatus = data.apply_status || {};
   const lines = outputLines(rows);
   lastCreateResultText = lines.join('\n');
   lastCreateResultCsv = createResultCsv(rows);
   const summary = [];
   if (rows.length) summary.push(`<div class="result-ok">成功 ${rows.length} 条</div>`);
+  if (applyStatus.message && !applyStatus.applied) summary.push(`<div class="result-error">配置未应用：${escapeHtml(applyStatus.message)}</div>`);
+  if (applyStatus.message && applyStatus.applied && applyStatus.restarted) summary.push(`<div class="result-ok">${escapeHtml(applyStatus.message)}</div>`);
+  if (skipped.length) summary.push(`<div class="text-muted">跳过 ${skipped.length} 条：</div><div class="result-errors text-muted">${skipped.map(escapeHtml).join('<br>')}</div>`);
   if (errors.length) summary.push(`<div class="result-error">失败 ${errors.length} 条：</div><div class="result-errors">${errors.map(escapeHtml).join('<br>')}</div>`);
-  if (!rows.length && !errors.length) summary.push('<div class="text-muted">没有成功创建的入站。</div>');
+  if (!rows.length && !errors.length && !skipped.length) summary.push('<div class="text-muted">没有成功创建的入站。</div>');
   $('#createResultSummary').html(summary.join(''));
   $('#createResultBox').text(lines.length ? lines.join('\n') : '没有成功创建的入站。');
+  $('#btnApplyProxyConfig').toggleClass('d-none', !applyStatus.message || applyStatus.applied);
   new bootstrap.Modal(document.getElementById('createResultModal')).show();
 }
 
@@ -517,11 +579,25 @@ function maskPassword(value) { const text = String(value || ''); return text ? (
 
 function parseTrafficLimit(value) {
   const text = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
-  const m = text.match(/^(\d+(?:\.\d+)?)(b|kb|mb|gb|tb|kib|mib|gib|tib)?$/);
+  const m = text.match(/^(\d+(?:\.\d+)?)(b|k|kb|m|mb|g|gb|t|tb|kib|mib|gib|tib)?$/);
   if (!m) return null;
   const n = parseFloat(m[1]);
   const unit = m[2] || 'gb';
-  const map = { b: 1, kb: 1000, mb: 1000 ** 2, gb: 1000 ** 3, tb: 1000 ** 4, kib: 1024, mib: 1024 ** 2, gib: 1024 ** 3, tib: 1024 ** 4 };
+  const map = {
+    b: 1,
+    k: 1000,
+    kb: 1000,
+    m: 1000 ** 2,
+    mb: 1000 ** 2,
+    g: 1000 ** 3,
+    gb: 1000 ** 3,
+    t: 1000 ** 4,
+    tb: 1000 ** 4,
+    kib: 1024,
+    mib: 1024 ** 2,
+    gib: 1024 ** 3,
+    tib: 1024 ** 4,
+  };
   return Math.max(0, Math.floor(n * (map[unit] || 1)));
 }
 
@@ -556,7 +632,7 @@ function renderUsers() {
   $('#checkAll').prop('checked', false);
   updatePagination(meta);
   if (!meta.pageRows.length) {
-    tb.append('<tr><td colspan="15" class="empty-cell">暂无节点</td></tr>');
+    tb.append('<tr><td colspan="14" class="empty-cell">暂无节点</td></tr>');
     return;
   }
   meta.pageRows.forEach(u => {
@@ -581,11 +657,9 @@ function renderUsers() {
         <td>${speedBadge(u.speed_limit)}</td>
         <td>${trafficCell(u)}</td>
         <td>${escapeHtml(formatDate(u.expire_at))}</td>
-        <td><button class="copy-btn test-btn" data-user-id="${u.id}" onclick="testUser(${u.id}, this)">一键测试</button></td>
         <td class="line-actions">
           <button class="mini-btn" onclick="copyNode(${u.id}, this)">复制</button>
           <button class="mini-btn" onclick="showInfo(${u.id})">信息</button>
-          <button class="mini-btn danger" onclick="deleteNode(${u.id})">删除</button>
         </td>
       </tr>
     `);
@@ -697,6 +771,44 @@ function openRenewModal() {
   new bootstrap.Modal(document.getElementById('renewModal')).show();
 }
 
+function batchEditableIds() {
+  return selectedIds().filter(id => Number.isInteger(id) && id > 0);
+}
+
+function openBatchLimitModal() {
+  const ids = batchEditableIds();
+  if (!ids.length) return toast('请先勾选要编辑的节点', 'error');
+  pendingBatchLimitIds = [...ids];
+  $('#batchSpeedLimit').val('');
+  $('#batchAddTraffic').val('');
+  $('#batchLimitHint').text(`将编辑已勾选的 ${ids.length} 个节点`);
+  new bootstrap.Modal(document.getElementById('batchLimitModal')).show();
+}
+
+async function batchEditLimits() {
+  const ids = [...pendingBatchLimitIds];
+  if (!ids.length) return toast('请先选择节点', 'error');
+  const payload = {
+    ids,
+    speed_limit: normalizeSpeedInput($('#batchSpeedLimit').val()),
+    set_traffic: normalizeTrafficInput($('#batchAddTraffic').val()),
+  };
+  if (!payload.speed_limit && !payload.set_traffic) return toast('请输入限速或设置流量', 'error');
+  const btn = $('#btnConfirmBatchLimit');
+  const old = btn.text();
+  btn.prop('disabled', true).text('保存中...');
+  try {
+    const r = await api.post('/api/users/batch-edit-limits', payload);
+    if (!r.ok) return toast(r.error || '批量编辑失败', 'error', 5000);
+    toast(`已更新 ${r.data.updated || 0} 个节点`, 'success');
+    pendingBatchLimitIds = [];
+    bootstrap.Modal.getInstance(document.getElementById('batchLimitModal'))?.hide();
+    await loadUsers();
+  } finally {
+    btn.prop('disabled', false).text(old);
+  }
+}
+
 function expireDateFromDays(days) {
   const d = new Date();
   d.setDate(d.getDate() + Math.max(1, parseInt(days || '30', 10)));
@@ -719,6 +831,18 @@ function compactDateFromInput(value) {
   return compact ? compact[1] : compactDateFromDays(30);
 }
 
+function normalizeTrafficInput(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return /^\d+(?:\.\d+)?$/.test(text) ? `${text}g` : text;
+}
+
+function normalizeSpeedInput(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return '';
+  return /^\d+(?:\.\d+)?$/.test(text) ? `${text}m` : text;
+}
+
 function syncDefaultAccountPassword(force = false) {
   const dateValue = compactDateFromInput($('#userExpire').val());
   const proto = $('#userProtocol').val();
@@ -735,9 +859,15 @@ function applyCustomerNote() {
 }
 
 function resetForm() {
+  $('#editingUserId').val('');
+  $('#userModalTitle').text('批量创建入站');
+  $('#btnSaveUser').text('创建');
+  $('#userCount').closest('div').show();
+  $('#skipExistingWrap').show();
+  $('#userProtocol,#userLine').prop('disabled', false);
   $('#userUsername,#userPassword').val('');
   $('#userCustomPort,#userNote,#userOwner').val('');
-  $('#userSpeedLimit').val('20mbit');
+  $('#userSpeedLimit').val('20m');
   $('#userTrafficLimit').val('130g');
   $('#userExpire').val(expireDateFromDays(30));
   $('.expire-quick button').removeClass('active');
@@ -750,11 +880,52 @@ function resetForm() {
   syncDefaultAccountPassword(true);
 }
 
+function toDatetimeLocal(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const d = new Date(text);
+  if (Number.isNaN(d.getTime())) return text.slice(0, 16);
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function openEditUser(id) {
+  const u = allUsers.find(x => x.id === id);
+  if (!u) return toast('节点不存在', 'error');
+  $('#editLimitUserId').val(u.id);
+  $('#editSpeedLimit').val(u.speed_limit || '20m');
+  $('#editAddTraffic').val('');
+  $('#editTrafficHint').text(`当前流量限制：${u.traffic_limit || '不限'}`);
+  new bootstrap.Modal(document.getElementById('editLimitModal')).show();
+}
+
+async function saveLimitEdit() {
+  const id = $('#editLimitUserId').val();
+  if (!id) return toast('节点不存在', 'error');
+  const btn = $('#btnSaveLimitEdit');
+  const old = btn.text();
+  btn.prop('disabled', true).text('保存中...');
+  try {
+    const r = await api.put(`/api/users/${id}`, {
+      edit_limits_only: true,
+      speed_limit: normalizeSpeedInput($('#editSpeedLimit').val()),
+      set_traffic: normalizeTrafficInput($('#editAddTraffic').val()),
+    });
+    if (!r.ok) return toast(r.error || '保存失败', 'error', 5000);
+    toast('节点限制已更新', 'success');
+    bootstrap.Modal.getInstance(document.getElementById('editLimitModal'))?.hide();
+    await loadUsers();
+  } finally {
+    btn.prop('disabled', false).text(old);
+  }
+}
+
 async function saveUser() {
   const saveBtn = $('#btnSaveUser');
   if (saveBtn.prop('disabled')) return;
   const oldText = saveBtn.text();
-  saveBtn.prop('disabled', true).text('创建中...');
+  const editingId = $('#editingUserId').val();
+  saveBtn.prop('disabled', true).text(editingId ? '保存中...' : '创建中...');
   const proto = $('#userProtocol').val();
   syncDefaultAccountPassword(false);
   const expireValue = ($('#userExpire').val() || '').trim();
@@ -769,7 +940,7 @@ async function saveUser() {
     ss_password: proto === 'ss' ? ($('#userPassword').val().trim() || defaultCredential) : null,
     line_id: $('#userLine').val(),
     custom_port: $('#userCustomPort').val() || null,
-    speed_limit: $('#userSpeedLimit').val().trim(),
+    speed_limit: normalizeSpeedInput($('#userSpeedLimit').val()),
     traffic_limit: $('#userTrafficLimit').val().trim(),
     expire_at: expireValue || null,
     count: parseInt($('#userCount').val() || '1', 10),
@@ -779,6 +950,15 @@ async function saveUser() {
   try {
     if (!data.line_id) return toast('请选择IP', 'error');
     if (!data.project_name) return toast('请选择项目', 'error');
+    if (editingId) {
+      data.listen_port = data.custom_port;
+      const r = await api.put(`/api/users/${editingId}`, data);
+      if (!r.ok) return toast(r.error || '保存失败', 'error', 6000);
+      toast('节点已更新', 'success');
+      bootstrap.Modal.getInstance(document.getElementById('userModal')).hide();
+      await loadUsers();
+      return;
+    }
     const r = await api.post('/api/users', data);
     if (!r.ok) return toast(r.error || '创建失败', 'error', 6000);
     const limitQueued = r.data.limit_queued || 0;
@@ -1027,25 +1207,53 @@ window.copyAllInfo = async function(btn) {
   flashCopyButton(btn, await copyText(text), '已复制全部');
 };
 
+async function copyCreateResult(btn) {
+  const box = document.getElementById('createResultBox');
+  const ok = await copyElementText(box);
+  if (btn && ok) {
+    const old = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = old; }, 1200);
+  }
+}
+
+async function applyProxyConfig(btn) {
+  if (!confirm('应用配置会受控重启 sing-box，当前代理连接会短暂断开几秒。确定现在应用吗？')) return;
+  const old = btn ? btn.textContent : '';
+  if (btn) btn.disabled = true, btn.textContent = '应用中...';
+  try {
+    const r = await api.post('/api/proxy/reload', { force: true });
+    if (!r.ok) return toast(r.error || '应用配置失败', 'error', 6000);
+    toast(`配置已应用，sing-box PID ${r.data.pid || ''}`, 'success', 4000);
+    $('#btnApplyProxyConfig').addClass('d-none');
+    await loadUsers();
+  } finally {
+    if (btn) btn.disabled = false, btn.textContent = old;
+  }
+}
+
 $(async () => {
   await Promise.all([loadLines(), loadProjects(), loadUsers(), loadCustomers()]);
   $('#btnNewUser').on('click', resetForm);
   $('#btnSaveUser').on('click', saveUser);
-  $('#btnCopyCreateResult').on('click', () => copyText(lastCreateResultText));
+  $('#btnSaveLimitEdit').on('click', saveLimitEdit);
+  $('#btnCopyCreateResult').on('click', function() { copyCreateResult(this); });
+  $('#btnApplyProxyConfig').on('click', function() { applyProxyConfig(this); });
   $('#btnDownloadCreateCsv').on('click', () => {
     if (!lastCreateResultCsv) return toast('没有可下载的创建结果', 'error');
     downloadText('create-result.csv', lastCreateResultCsv, 'text/csv;charset=utf-8');
   });
   $('#btnSync').on('click', syncUsers);
-  $('#btnTestVisible').on('click', testVisibleUsers);
   $('#btnCleanExpired').on('click', cleanExpired);
   $('#btnBatchStop').on('click', openBatchStopModal);
   $('#btnBatchDelete').on('click', openBatchDeleteModal);
+  $('#btnBatchEditLimits').on('click', openBatchLimitModal);
   $('#btnAssignUser').on('click', openAssignUserModal);
   $('#btnAssignProject').on('click', openAssignProjectModal);
   $('#btnRenew').on('click', openRenewModal);
   $('#btnConfirmBatchDelete').on('click', batchDelete);
   $('#btnConfirmBatchStop').on('click', batchStop);
+  $('#btnConfirmBatchLimit').on('click', batchEditLimits);
   $('#btnConfirmAssignUser').on('click', assignUser);
   $('#btnConfirmAssignProject').on('click', assignProject);
   $('#btnConfirmRenew').on('click', renewNodes);

@@ -17,6 +17,7 @@ from routes.auth import bp as auth_bp
 from routes.auth import login_required
 from routes.auth import permission_required
 from routes.auth import PERMISSION_ITEMS, current_permissions
+from routes.center import bp as center_bp
 from routes.hyperv import bp as hyperv_bp
 from routes.ips import bp as ips_bp
 from routes.monitor import bp as monitor_bp
@@ -38,9 +39,17 @@ def create_app() -> Flask:
 
     @app.context_processor
     def inject_version():
-        return {"app_version": APP_VERSION, "permission_items": PERMISSION_ITEMS, "current_permissions": current_permissions()}
+        permissions = current_permissions()
+        nav_items = [item for item in PERMISSION_ITEMS if item["key"] in permissions]
+        return {
+            "app_version": APP_VERSION,
+            "permission_items": PERMISSION_ITEMS,
+            "current_permissions": permissions,
+            "nav_items": nav_items,
+        }
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(center_bp)
     app.register_blueprint(ips_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(monitor_bp)
