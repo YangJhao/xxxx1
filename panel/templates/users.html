@@ -183,6 +183,7 @@
         <div><label class="form-label">项目</label><input class="form-control" id="userProject" placeholder="直接填写项目"></div>
         <div><label class="form-label">用户</label><input class="form-control" id="userOwner" list="ownerOptions" placeholder="直接填写用户"><datalist id="ownerOptions"></datalist></div>
         <div><label class="form-label">用户排除</label><input class="form-control" id="userExclude" list="ownerOptions" placeholder="填用户，排除已有该用户的节点"></div>
+        <div><label class="form-label">项目排除</label><input class="form-control" id="projectExclude" placeholder="填项目，和用户同时填写时需同一入站匹配"></div>
         <div class="node-range-field">
           <label class="form-label">节点范围</label>
           <select class="form-select" id="nodeRange">
@@ -451,28 +452,45 @@ function setCreateNodeSelection(values) {
   syncNodePickerFromSelect();
 }
 
-function serverHasExcludedUser(server) {
-  const needle = ($('#userExclude').val() || '').trim().toLowerCase();
-  if (!needle) return false;
-  return (server.inbound_assignments || []).some(item => String(item || '').toLowerCase().includes(needle));
+function assignmentMatchesExclude(item, ownerNeedle, projectNeedle) {
+  const parts = String(item || '').split('|');
+  const owner = String(parts[0] || '').trim().toLowerCase();
+  const project = String(parts.slice(1).join('|') || '').trim().toLowerCase();
+  if (ownerNeedle && projectNeedle) return owner.includes(ownerNeedle) && project.includes(projectNeedle);
+  if (ownerNeedle) return owner.includes(ownerNeedle);
+  if (projectNeedle) return project.includes(projectNeedle);
+  return false;
 }
 
-function localHasExcludedUser() {
-  const needle = ($('#userExclude').val() || '').trim().toLowerCase();
-  if (!needle) return false;
+function serverMatchesExclude(server) {
+  const ownerNeedle = ($('#userExclude').val() || '').trim().toLowerCase();
+  const projectNeedle = ($('#projectExclude').val() || '').trim().toLowerCase();
+  if (!ownerNeedle && !projectNeedle) return false;
+  return (server.inbound_assignments || []).some(item => assignmentMatchesExclude(item, ownerNeedle, projectNeedle));
+}
+
+function localMatchesExclude() {
+  const ownerNeedle = ($('#userExclude').val() || '').trim().toLowerCase();
+  const projectNeedle = ($('#projectExclude').val() || '').trim().toLowerCase();
+  if (!ownerNeedle && !projectNeedle) return false;
   const localIp = localServerIp || location.hostname || '';
   const localServer = (allManagedServers || []).find(server => server.is_local || String(server.ip || '') === String(localIp));
   const assignments = localServer ? (localServer.inbound_assignments || []) : [];
-  if (assignments.some(item => String(item || '').toLowerCase().includes(needle))) return true;
+  if (assignments.some(item => assignmentMatchesExclude(item, ownerNeedle, projectNeedle))) return true;
   return (allUsers || []).some(user => {
     if (String(user.id || '').startsWith('remote:')) return false;
-    return String(user.owner_name || user.username || '').toLowerCase().includes(needle);
+    const owner = String(user.owner_name || user.username || '').toLowerCase();
+    const project = String(user.project_name || '').toLowerCase();
+    if (ownerNeedle && projectNeedle) return owner.includes(ownerNeedle) && project.includes(projectNeedle);
+    if (ownerNeedle) return owner.includes(ownerNeedle);
+    if (projectNeedle) return project.includes(projectNeedle);
+    return false;
   });
 }
 
 function visibleManagedServers() {
   return (allManagedServers || [])
-    .filter(server => !serverHasExcludedUser(server))
+    .filter(server => !serverMatchesExclude(server))
     .filter(server => !server.is_local)
     .slice()
     .sort((a, b) => {
@@ -508,7 +526,7 @@ function defaultCreateSelection() {
 
 function renderCreateNodePicker() {
   const box = $('#nodePickerList').empty();
-  const showLocalLite = canUseLocalLite() && !localHasExcludedUser();
+  const showLocalLite = canUseLocalLite() && !localMatchesExclude();
   const localCount = showLocalLite ? 1 : 0;
   const localIp = localServerIp || location.hostname || '本机公网 IP';
   if (allManagedServers.length) {
@@ -1205,7 +1223,7 @@ function resetForm() {
   $('#userCount').closest('div').show();
   $('#userProtocol,#userLine').prop('disabled', false);
   $('#userUsername,#userPassword').val('');
-  $('#userCustomPort,#userNote,#userOwner,#userExclude').val('');
+  $('#userCustomPort,#userNote,#userOwner,#userExclude,#projectExclude').val('');
   $('#userSpeedLimit').val('20m');
   $('#userTrafficLimit').val('130g');
   $('#userExpire').val(expireDateFromDays(1));
@@ -1741,7 +1759,7 @@ $(async () => {
     syncDefaultAccountPassword(false);
   });
   $('#userOwner').on('input change', applyCustomerNote);
-  $('#userExclude').on('input change', function() {
+  $('#userExclude,#projectExclude').on('input change', function() {
     renderCreateNodePicker();
     $('#nodeRange').val('all_servers');
   });

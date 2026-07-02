@@ -80,7 +80,7 @@ def _server_counts(session, ip: str) -> dict:
                 continue
             seen.add(label)
             assignments.append(label)
-            if len(assignments) >= 10:
+            if len(assignments) >= 1000:
                 break
     return {
         "line_count": len(line_ids),
@@ -144,7 +144,7 @@ def _remote_server_counts(server) -> dict:
             continue
         seen.add(label)
         assignments.append(label)
-        if len(assignments) >= 10:
+        if len(assignments) >= 1000:
             break
     return {
         "inbound_count": len(users),
