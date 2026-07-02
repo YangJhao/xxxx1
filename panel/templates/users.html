@@ -517,65 +517,84 @@ function localInboundSummary() {
 }
 
 function defaultCreateSelection() {
-  const values = [];
-  if (canUseLocalLite()) values.push('lite');
-  visibleManagedServers().forEach(server => values.push(`server:${server.id}`));
+  const values = $('.node-picker-card').map((_, el) => $(el).data('value')).get().filter(Boolean);
   if (!values.length && allLines.length) values.push('all');
   return values.length ? values : ['lite'];
 }
 
-function renderCreateNodePicker() {
+function renderCreateNodePicker(options = {}) {
+  const preserveSelection = Boolean(options.preserveSelection);
+  const previousValues = preserveSelection ? selectedLineValues() : [];
   const box = $('#nodePickerList').empty();
   const showLocalLite = canUseLocalLite() && !localMatchesExclude();
-  const localCount = showLocalLite ? 1 : 0;
-  const localIp = localServerIp || location.hostname || '本机公网 IP';
+  const localIp = localServerIp || location.hostname || '???? IP';
   if (allManagedServers.length) {
-    const servers = visibleManagedServers();
-    $('#availableNodeCount').text(`可用 ${servers.length + localCount} 个`);
+    const nodes = [];
     if (showLocalLite) {
-      box.append(`
-        <label class="node-picker-card local-node-card active" data-value="lite">
-          <input class="form-check-input" type="checkbox" checked>
-          <span class="node-main">${escapeHtml(localIp)} <em class="local-node-badge">本机</em></span>
-          <span class="node-sub">${escapeHtml(localInboundSummary())}</span>
-        </label>
-      `);
+      const localServer = (allManagedServers || []).find(server => server.is_local || String(server.ip || '') === String(localIp));
+      const inboundCount = localServer ? Number(localServer.inbound_count || 0) : (allUsers || []).filter(user => !String(user.id || '').startsWith('remote:')).length;
+      nodes.push({
+        value: 'lite',
+        ip: localIp,
+        sub: localInboundSummary(),
+        inboundCount,
+        local: true,
+      });
     }
-    servers.forEach(server => {
-      const state = server.install_status === 'installed' ? '已安装' : (server.status || 'unknown');
+    visibleManagedServers().forEach(server => {
+      const state = server.install_status === 'installed' ? '???' : (server.status || 'unknown');
       const inboundCount = Number(server.inbound_count || 0);
       const assignments = (server.inbound_assignments || []).slice(0, 6).join('  ');
-      const subText = assignments ? `入站 ${inboundCount} 个 / ${assignments}` : `入站 ${inboundCount} 个 / ${state}`;
+      const subText = assignments ? `?? ${inboundCount} ? / ${assignments}` : `?? ${inboundCount} ? / ${state}`;
+      nodes.push({
+        value: `server:${server.id}`,
+        ip: server.ip,
+        sub: subText,
+        inboundCount,
+        local: false,
+      });
+    });
+    nodes.sort((a, b) => {
+      const diff = Number(a.inboundCount || 0) - Number(b.inboundCount || 0);
+      if (diff) return diff;
+      return String(a.ip || '').localeCompare(String(b.ip || ''), 'zh-CN', { numeric: true });
+    });
+    $('#availableNodeCount').text(`?? ${nodes.length} ?`);
+    nodes.forEach(node => {
       box.append(`
-        <label class="node-picker-card active" data-value="server:${server.id}">
+        <label class="node-picker-card active${node.local ? ' local-node-card' : ''}" data-value="${escapeHtml(node.value)}">
           <input class="form-check-input" type="checkbox" checked>
-          <span class="node-main">${escapeHtml(server.ip)}</span>
-          <span class="node-sub">${escapeHtml(subText)}</span>
+          <span class="node-main">${escapeHtml(node.ip)}${node.local ? ' <em class="local-node-badge">??</em>' : ''}</span>
+          <span class="node-sub">${escapeHtml(node.sub)}</span>
         </label>
       `);
     });
-    setCreateNodeSelection(defaultCreateSelection());
+    const availableValues = nodes.map(node => node.value);
+    const nextValues = preserveSelection
+      ? previousValues.filter(value => availableValues.includes(value))
+      : availableValues;
+    setCreateNodeSelection(nextValues);
     return;
   }
-  const options = allLines.map(line => ({
+  const optionsList = allLines.map(line => ({
     value: String(line.id),
     ip: line.public_ip,
-    sub: `${line.public_ip} / 入站 ${Number(line.user_count || 0)} 个`,
+    sub: `${line.public_ip} / ?? ${Number(line.user_count || 0)} ?`,
   }));
-  if (!options.length && showLocalLite) {
-    $('#availableNodeCount').text('可用 1 个');
+  if (!optionsList.length && showLocalLite) {
+    $('#availableNodeCount').text('?? 1 ?');
     box.append(`
       <label class="node-picker-card local-node-card active" data-value="lite">
         <input class="form-check-input" type="checkbox" checked>
-        <span class="node-main">${escapeHtml(localIp)} <em class="local-node-badge">本机</em></span>
+        <span class="node-main">${escapeHtml(localIp)} <em class="local-node-badge">??</em></span>
         <span class="node-sub">${escapeHtml(localInboundSummary())}</span>
       </label>
     `);
-    setCreateNodeSelection(['lite']);
+    setCreateNodeSelection(preserveSelection ? previousValues.filter(value => value === 'lite') : ['lite']);
     return;
   }
-  $('#availableNodeCount').text(`可用 ${options.length} 个`);
-  options.forEach(item => {
+  $('#availableNodeCount').text(`?? ${optionsList.length} ?`);
+  optionsList.forEach(item => {
     box.append(`
       <label class="node-picker-card active" data-value="${escapeHtml(item.value)}">
         <input class="form-check-input" type="checkbox" checked>
@@ -584,7 +603,8 @@ function renderCreateNodePicker() {
       </label>
     `);
   });
-  setCreateNodeSelection(['all']);
+  const lineValues = optionsList.map(item => item.value);
+  setCreateNodeSelection(preserveSelection ? previousValues.filter(value => lineValues.includes(value)) : ['all']);
 }
 
 async function loadLines() {
@@ -1760,8 +1780,7 @@ $(async () => {
   });
   $('#userOwner').on('input change', applyCustomerNote);
   $('#userExclude,#projectExclude').on('input change', function() {
-    renderCreateNodePicker();
-    $('#nodeRange').val('all_servers');
+    renderCreateNodePicker({ preserveSelection: $('#nodeRange').val() === 'manual' });
   });
   $('#nodeRange').on('change', function() {
     if ($(this).val() === 'all_servers') {
