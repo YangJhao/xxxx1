@@ -133,7 +133,7 @@ class ProxyUser(Base):
 
         if proto == "ss":
             link = f"ss://{ss_method}:{ss_password}@{host}:{port}#{self.username}"
-            field = f"{host}|{port}|{ss_method}|{ss_password}"
+            field = f"{host}|{port}|{ss_method}|{ss_password}|{expire_date}"
             inbound_user = ss_method
             inbound_password = ss_password
         elif proto == "vless":
@@ -177,12 +177,12 @@ class ProxyUser(Base):
             inbound_password = self.password
         elif proto == "http":
             link = f"http://{self.username}:{self.password}@{host}:{port}"
-            field = f"{host}|{port}|{self.username}|{self.password}"
+            field = f"{host}|{port}|{self.username}|{self.password}|{expire_date}"
             inbound_user = self.username
             inbound_password = self.password
         else:
             link = f"socks5://{self.username}:{self.password}@{host}:{port}"
-            field = f"{host}|{port}|{self.username}|{self.password}"
+            field = f"{host}|{port}|{self.username}|{self.password}|{expire_date}"
             inbound_user = self.username
             inbound_password = self.password
 

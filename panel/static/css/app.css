@@ -1230,9 +1230,6 @@ body { display: flex; }
 .create-form-grid .form-select {
   color: #5f6777;
 }
-.node-range-field {
-  min-width: 0;
-}
 .node-picker-field {
   grid-column: 1 / -1;
   width: 100%;

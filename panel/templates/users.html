@@ -184,14 +184,7 @@
         <div><label class="form-label">用户</label><input class="form-control" id="userOwner" list="ownerOptions" placeholder="直接填写用户"><datalist id="ownerOptions"></datalist></div>
         <div><label class="form-label">用户排除</label><input class="form-control" id="userExclude" list="ownerOptions" placeholder="填用户，排除已有该用户的节点"></div>
         <div><label class="form-label">项目排除</label><input class="form-control" id="projectExclude" placeholder="填项目，和用户同时填写时需同一入站匹配"></div>
-        <div class="node-range-field">
-          <label class="form-label">节点范围</label>
-          <select class="form-select" id="nodeRange">
-            <option value="all_servers">全部可用节点</option>
-            <option value="manual">手动选择节点</option>
-          </select>
-        </div>
-        <div class="line-field node-picker-field">
+                <div class="line-field node-picker-field">
           <div class="node-picker-head">
             <label class="form-check node-check-all">
               <input class="form-check-input" type="checkbox" id="checkAllCreateNodes" checked>
@@ -430,6 +423,7 @@ let lastCreateResultCsv = '';
 let lastCreateResultRows = [];
 let pendingBatchLimitIds = [];
 let pendingBatchDeleteIds = [];
+let createPickerManual = false;
 const IS_LITE_MODE = {{ 'true' if is_lite_mode else 'false' }};
 const PROTO_LABELS = { socks5: 'SK5', http: 'HTTP', ss: 'SS', vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', hysteria2: 'HY2', wireguard: 'WG' };
 
@@ -527,7 +521,7 @@ function renderCreateNodePicker(options = {}) {
   const previousValues = preserveSelection ? selectedLineValues() : [];
   const box = $('#nodePickerList').empty();
   const showLocalLite = canUseLocalLite() && !localMatchesExclude();
-  const localIp = localServerIp || location.hostname || '???? IP';
+  const localIp = localServerIp || location.hostname || '\u672c\u673a\u516c\u7f51 IP';
   if (allManagedServers.length) {
     const nodes = [];
     if (showLocalLite) {
@@ -542,10 +536,10 @@ function renderCreateNodePicker(options = {}) {
       });
     }
     visibleManagedServers().forEach(server => {
-      const state = server.install_status === 'installed' ? '???' : (server.status || 'unknown');
+      const state = server.install_status === 'installed' ? '\u5df2\u5b89\u88c5' : (server.status || 'unknown');
       const inboundCount = Number(server.inbound_count || 0);
       const assignments = (server.inbound_assignments || []).slice(0, 6).join('  ');
-      const subText = assignments ? `?? ${inboundCount} ? / ${assignments}` : `?? ${inboundCount} ? / ${state}`;
+      const subText = assignments ? `\u5165\u7ad9 ${inboundCount} \u4e2a / ${assignments}` : `\u5165\u7ad9 ${inboundCount} \u4e2a / ${state}`;
       nodes.push({
         value: `server:${server.id}`,
         ip: server.ip,
@@ -559,12 +553,12 @@ function renderCreateNodePicker(options = {}) {
       if (diff) return diff;
       return String(a.ip || '').localeCompare(String(b.ip || ''), 'zh-CN', { numeric: true });
     });
-    $('#availableNodeCount').text(`?? ${nodes.length} ?`);
+    $('#availableNodeCount').text(`\u53ef\u7528 ${nodes.length} \u4e2a`);
     nodes.forEach(node => {
       box.append(`
         <label class="node-picker-card active${node.local ? ' local-node-card' : ''}" data-value="${escapeHtml(node.value)}">
           <input class="form-check-input" type="checkbox" checked>
-          <span class="node-main">${escapeHtml(node.ip)}${node.local ? ' <em class="local-node-badge">??</em>' : ''}</span>
+          <span class="node-main">${escapeHtml(node.ip)}${node.local ? ' <em class="local-node-badge">\u672c\u673a</em>' : ''}</span>
           <span class="node-sub">${escapeHtml(node.sub)}</span>
         </label>
       `);
@@ -579,21 +573,21 @@ function renderCreateNodePicker(options = {}) {
   const optionsList = allLines.map(line => ({
     value: String(line.id),
     ip: line.public_ip,
-    sub: `${line.public_ip} / ?? ${Number(line.user_count || 0)} ?`,
+    sub: `${line.public_ip} / \u5165\u7ad9 ${Number(line.user_count || 0)} \u4e2a`,
   }));
   if (!optionsList.length && showLocalLite) {
-    $('#availableNodeCount').text('?? 1 ?');
+    $('#availableNodeCount').text('\u53ef\u7528 1 \u4e2a');
     box.append(`
       <label class="node-picker-card local-node-card active" data-value="lite">
         <input class="form-check-input" type="checkbox" checked>
-        <span class="node-main">${escapeHtml(localIp)} <em class="local-node-badge">??</em></span>
+        <span class="node-main">${escapeHtml(localIp)} <em class="local-node-badge">\u672c\u673a</em></span>
         <span class="node-sub">${escapeHtml(localInboundSummary())}</span>
       </label>
     `);
     setCreateNodeSelection(preserveSelection ? previousValues.filter(value => value === 'lite') : ['lite']);
     return;
   }
-  $('#availableNodeCount').text(`?? ${optionsList.length} ?`);
+  $('#availableNodeCount').text(`\u53ef\u7528 ${optionsList.length} \u4e2a`);
   optionsList.forEach(item => {
     box.append(`
       <label class="node-picker-card active" data-value="${escapeHtml(item.value)}">
@@ -720,12 +714,17 @@ function portFor(u) {
 }
 
 function outputLine(u) {
-  if (['hysteria2', 'vmess'].includes(u.protocol) && u.uri) return u.uri;
-  if (u.field) return u.field;
+  const expire = formatDate(u.expire_at);
+  const appendExpire = (text) => {
+    const value = String(text || '').trim();
+    if (!value) return '';
+    return expire && !value.endsWith(`|${expire}`) ? `${value}|${expire}` : value;
+  };
+  if (['hysteria2', 'vmess'].includes(u.protocol) && u.uri) return appendExpire(u.uri);
+  if (u.field) return appendExpire(u.field);
   const ip = u.line_ip || '';
   const port = portFor(u);
-  const expire = formatDate(u.expire_at);
-  if (u.protocol === 'vmess') return protocolUri(u);
+  if (u.protocol === 'vmess') return appendExpire(protocolUri(u));
   if (u.protocol === 'hysteria2') return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
   if (u.protocol === 'wireguard') return `${ip}|${port}|wireguard|${u.username || ''}|${expire}`;
   if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}|${expire}`;
@@ -1251,7 +1250,7 @@ function resetForm() {
   $('.expire-quick button[data-days="1"]').addClass('active');
   $('#userProject').val('');
   $('#userProtocol').val(arguments[0] || 'socks5').trigger('change');
-  $('#nodeRange').val('all_servers');
+  createPickerManual = false;
   setCreateNodeSelection(defaultCreateSelection());
   $('#userCount').val(1);
   syncDefaultAccountPassword(true);
@@ -1780,19 +1779,11 @@ $(async () => {
   });
   $('#userOwner').on('input change', applyCustomerNote);
   $('#userExclude,#projectExclude').on('input change', function() {
-    renderCreateNodePicker({ preserveSelection: $('#nodeRange').val() === 'manual' });
-  });
-  $('#nodeRange').on('change', function() {
-    if ($(this).val() === 'all_servers') {
-      setCreateNodeSelection(defaultCreateSelection());
-    } else {
-      const values = $('.node-picker-card input:checked').map((_, el) => $(el).closest('.node-picker-card').data('value')).get();
-      setCreateNodeSelection(values);
-    }
+    renderCreateNodePicker({ preserveSelection: createPickerManual });
   });
   $('#checkAllCreateNodes').on('change', function() {
     const checked = this.checked;
-    $('#nodeRange').val(checked ? 'all_servers' : 'manual');
+    createPickerManual = !checked;
     if (checked) {
       setCreateNodeSelection(defaultCreateSelection());
     } else {
@@ -1800,7 +1791,7 @@ $(async () => {
     }
   });
   $('#nodePickerList').on('change', '.node-picker-card input', function() {
-    $('#nodeRange').val('manual');
+    createPickerManual = true;
     const values = $('.node-picker-card input:checked').map((_, el) => $(el).closest('.node-picker-card').data('value')).get();
     setCreateNodeSelection(values);
   });
