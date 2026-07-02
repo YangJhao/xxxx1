@@ -680,22 +680,24 @@ function portFor(u) {
 }
 
 function outputLine(u) {
+  if (u.field) return u.field;
   const ip = u.line_ip || '';
   const port = portFor(u);
   const expire = formatDate(u.expire_at);
-  if (u.protocol === 'hysteria2') return `${ip}|${port}|${expire}`;
+  if (u.protocol === 'hysteria2') return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
   if (u.protocol === 'wireguard') return `${ip}|${port}|wireguard|${u.username || ''}|${expire}`;
   if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}|${expire}`;
   return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
 }
 
 function protocolUri(u) {
+  if (u.uri) return u.uri;
   const ip = u.line_ip || '';
   const port = portFor(u);
   if (u.protocol === 'wireguard') return `${ip}:${port} ${u.username || ''}.conf`;
   if (u.protocol === 'vless') return `vless://${u.password}@${ip}:${port}?encryption=none&type=tcp#${encodeURIComponent(u.username || 'vless')}`;
   if (u.protocol === 'trojan') return `trojan://${u.password}@${ip}:${port}?security=tls&allowInsecure=1&sni=${ip}#${encodeURIComponent(u.username || 'trojan')}`;
-  if (u.protocol === 'hysteria2') return `hysteria2://${ip}:${port}?insecure=1&sni=${ip}#${encodeURIComponent(u.username || 'hy2')}`;
+  if (u.protocol === 'hysteria2') return `hysteria2://${u.password || ''}@${ip}:${port}?insecure=1&sni=${ip}#${encodeURIComponent(u.username || 'hy2')}`;
   if (u.protocol === 'http') return `http://${u.username || ''}:${u.password || ''}@${ip}:${port}`;
   if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}`;
   return `socks5://${u.username || ''}:${u.password || ''}@${ip}:${port}`;
@@ -722,8 +724,8 @@ function createResultCsv(rows) {
   const body = (rows || []).map(u => {
     const ip = u.line_ip || '';
     const port = portFor(u);
-    const account = u.protocol === 'hysteria2' ? '' : (u.protocol === 'ss' ? (u.ss_method || 'aes-256-gcm') : (u.username || ''));
-    const password = u.protocol === 'hysteria2' ? '' : (u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || ''));
+    const account = u.protocol === 'ss' ? (u.ss_method || 'aes-256-gcm') : (u.username || '');
+    const password = u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || '');
     return [ip, port, account, password, formatDate(u.expire_at)].map(csvEscape).join(',');
   });
   return [header.join(','), ...body].join('\n');
@@ -1598,7 +1600,10 @@ async function testVisibleUsers() {
 async function showInfo(id) {
   const u = allUsers.find(x => String(x.id) === String(id));
   if (!u) return;
-  const r = await api.get(`/api/users/${id}/connection-info`);
+  const url = String(id).startsWith('remote:')
+    ? `/api/users/remote-connection-info?id=${encodeURIComponent(id)}`
+    : `/api/users/${id}/connection-info`;
+  const r = await api.get(url);
   if (!r.ok) return toast(r.error || '读取信息失败', 'error');
   const info = r.data || {};
   const inbound = info.inbound || {};

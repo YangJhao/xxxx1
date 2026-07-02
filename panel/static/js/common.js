@@ -19,7 +19,10 @@ window.api = {
         };
       }
     } catch (e) {
-      return { ok: false, error: e.message };
+      const message = e && e.message === 'Failed to fetch'
+        ? '服务正在应用配置或网络短暂中断，请稍后刷新'
+        : (e.message || '网络请求失败');
+      return { ok: false, error: message };
     }
   },
   get: (url) => api.request('GET', url),

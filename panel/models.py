@@ -214,6 +214,10 @@ class ProxyUser(Base):
             "note": self.note,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+        if self.line:
+            info = self.get_connection_info()
+            d["uri"] = info.get("uri")
+            d["field"] = info.get("field")
         if not hide_password:
             d["password"] = self.password
             d["ss_password"] = self.ss_password

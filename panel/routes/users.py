@@ -567,8 +567,16 @@ def _normalize_traffic_limit(value: str | None, default: str | None = None) -> s
 
 
 def _reload_proxy(session=None):
-    write_cfg(session)
-    return proxy_manager.restart_config()
+    hot = proxy_manager.reload_config_no_restart(session)
+    if hot.get("ok"):
+        return hot
+    pid = proxy_manager.restart_config()
+    return {
+        "ok": True,
+        "restarted": True,
+        "pid": pid,
+        "message": f"hot reload failed; restarted sing-box: {hot.get('message') or 'unknown'}",
+    }
 
 
 def _apply_user_limit(user):
@@ -694,18 +702,18 @@ def _format_bps(bytes_per_second: int) -> str:
 
 
 def _is_port_listening(port: int, protocol: str | None = None) -> bool:
-    try:
-        targets = {"tcp"}
-        if (protocol or "").lower() in TESTABLE_UDP_PROTOCOLS:
-            targets.add("udp")
-        if "tcp" in targets:
-            for conn in psutil.net_connections(kind="tcp"):
-                if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == int(port):
-                    return True
-        if "udp" in targets:
+    if (protocol or "").lower() == "hysteria2":
+        try:
             for conn in psutil.net_connections(kind="udp"):
                 if conn.laddr and conn.laddr.port == int(port):
                     return True
+        except Exception:
+            pass
+        return False
+    try:
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.status == psutil.CONN_LISTEN and conn.laddr and conn.laddr.port == int(port):
+                return True
     except Exception:
         pass
     return False
@@ -778,9 +786,30 @@ def _ensure_created_applied(users: list[ProxyUser]) -> dict:
     status = _created_apply_status(users)
     if status["applied"]:
         return status
-    status["restarted"] = True
-    status["message"] = f"端口 {', '.join(map(str, status['missing_ports'][:8]))} 重启后仍未监听"
-    return status
+    missing_before = list(status.get("missing_ports") or [])
+    try:
+        pid = proxy_manager.restart_config()
+        time.sleep(1.2)
+        status = _created_apply_status(users)
+        status["restarted"] = True
+        status["pid"] = pid
+        if status["applied"]:
+            status["message"] = (
+                "hot reload did not expose every listener; restarted sing-box and verified ports: "
+                + ", ".join(map(str, missing_before[:8]))
+            )
+        else:
+            status["message"] = (
+                "ports still not listening after sing-box restart: "
+                + ", ".join(map(str, (status.get("missing_ports") or [])[:8]))
+            )
+        return status
+    except Exception as exc:
+        status["applied"] = False
+        status["restarted"] = False
+        status["message"] = f"restart failed after listener check: {exc}"
+        return status
+
 
 def _interface_for_line(line: Line) -> str | None:
     candidates = [line.note, line.name]
@@ -1723,6 +1752,25 @@ def connection_info(uid):
         if not user.status:
             return jsonify({"ok": False, "error": "节点已停用"}), 410
         return jsonify({"ok": True, "data": user.get_connection_info()})
+    finally:
+        s.close()
+
+
+@bp.route("/remote-connection-info", methods=["GET"])
+@login_required
+def remote_connection_info():
+    remote_id = _parse_remote_user_id(request.args.get("id") or "")
+    if not remote_id:
+        return jsonify({"ok": False, "error": "remote id invalid"}), 400
+    server_id, user_id = remote_id
+    s = get_session()
+    try:
+        server = s.query(ManagedServer).get(server_id)
+        if not server:
+            return jsonify({"ok": False, "error": "server not found"}), 404
+        return jsonify(_remote_panel_get(server, f"/api/users/{user_id}/connection-info", timeout=15))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
         s.close()
 
