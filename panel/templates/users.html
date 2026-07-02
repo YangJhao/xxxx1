@@ -54,6 +54,7 @@
         <option value="http">HTTP</option>
         <option value="ss">shadowsocks</option>
         <option value="vless">VLESS</option>
+        <option value="vmess">VMess</option>
         <option value="trojan">Trojan</option>
         <option value="hysteria2">Hysteria2</option>
       </select>
@@ -200,7 +201,7 @@
           <select class="form-select d-none" id="userLine" multiple size="6" required></select>
           <div class="node-picker-list" id="nodePickerList"></div>
         </div>
-        <div class="protocol-field"><label class="form-label">协议</label><select class="form-select" id="userProtocol" required><option value="socks5">SOCKS</option><option value="http">HTTP</option><option value="ss">Shadowsocks</option><option value="vless">VLESS</option><option value="trojan">Trojan</option><option value="hysteria2">Hysteria2</option><option value="wireguard">WireGuard</option></select></div>
+        <div class="protocol-field"><label class="form-label">协议</label><select class="form-select" id="userProtocol" required><option value="socks5">SOCKS</option><option value="http">HTTP</option><option value="ss">Shadowsocks</option><option value="vless">VLESS</option><option value="vmess">VMess</option><option value="trojan">Trojan</option><option value="hysteria2">Hysteria2</option><option value="wireguard">WireGuard</option></select></div>
         <div class="custom-port-wrap"><label class="form-label">自定义端口</label><input class="form-control" id="userCustomPort" type="number" min="1025" max="65535" placeholder="留空随机 20000-50000"></div>
         <div><label class="form-label" id="accountLabel">协议账号</label><input class="form-control account-field" id="userUsername" placeholder="留空自动生成"><select class="form-select ss-method-field d-none" id="userSsMethod"><option value="aes-256-gcm">aes-256-gcm</option><option value="aes-128-gcm">aes-128-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option><option value="aes-256-cfb">aes-256-cfb</option><option value="aes-128-cfb">aes-128-cfb</option><option value="rc4-md5">rc4-md5</option></select></div>
         <div><label class="form-label" id="passwordLabel">密码</label><input class="form-control" id="userPassword" placeholder="留空自动生成"></div>
@@ -429,7 +430,7 @@ let lastCreateResultRows = [];
 let pendingBatchLimitIds = [];
 let pendingBatchDeleteIds = [];
 const IS_LITE_MODE = {{ 'true' if is_lite_mode else 'false' }};
-const PROTO_LABELS = { socks5: 'SK5', http: 'HTTP', ss: 'SS', vless: 'VLESS', trojan: 'Trojan', hysteria2: 'HY2', wireguard: 'WG' };
+const PROTO_LABELS = { socks5: 'SK5', http: 'HTTP', ss: 'SS', vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', hysteria2: 'HY2', wireguard: 'WG' };
 
 
 function syncNodePickerFromSelect() {
@@ -674,16 +675,19 @@ function portFor(u) {
   if (u.protocol === 'http') return u.http_port || ((u.socks_port || 0) + 10);
   if (u.protocol === 'ss') return u.ss_port || ((u.socks_port || 0) + 20);
   if (u.protocol === 'vless') return u.vless_port || ((u.line_id || 0) + 13000);
+  if (u.protocol === 'vmess') return u.vmess_port || ((u.line_id || 0) + 16000);
   if (u.protocol === 'trojan') return u.trojan_port || ((u.line_id || 0) + 14000);
   if (u.protocol === 'hysteria2') return u.hysteria2_port || ((u.line_id || 0) + 15000);
   return u.socks_port || '';
 }
 
 function outputLine(u) {
+  if (['hysteria2', 'vmess'].includes(u.protocol) && u.uri) return u.uri;
   if (u.field) return u.field;
   const ip = u.line_ip || '';
   const port = portFor(u);
   const expire = formatDate(u.expire_at);
+  if (u.protocol === 'vmess') return protocolUri(u);
   if (u.protocol === 'hysteria2') return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
   if (u.protocol === 'wireguard') return `${ip}|${port}|wireguard|${u.username || ''}|${expire}`;
   if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}|${expire}`;
@@ -696,6 +700,24 @@ function protocolUri(u) {
   const port = portFor(u);
   if (u.protocol === 'wireguard') return `${ip}:${port} ${u.username || ''}.conf`;
   if (u.protocol === 'vless') return `vless://${u.password}@${ip}:${port}?encryption=none&type=tcp#${encodeURIComponent(u.username || 'vless')}`;
+  if (u.protocol === 'vmess') {
+    const payload = {
+      v: '2',
+      ps: u.username || 'vmess',
+      add: ip,
+      port: String(port),
+      id: u.password || '',
+      aid: '0',
+      scy: 'auto',
+      net: 'tcp',
+      type: 'none',
+      host: '',
+      path: '',
+      tls: '',
+      sni: '',
+    };
+    return `vmess://${btoa(unescape(encodeURIComponent(JSON.stringify(payload))))}`;
+  }
   if (u.protocol === 'trojan') return `trojan://${u.password}@${ip}:${port}?security=tls&allowInsecure=1&sni=${ip}#${encodeURIComponent(u.username || 'trojan')}`;
   if (u.protocol === 'hysteria2') return `hysteria2://${u.password || ''}@${ip}:${port}?insecure=1&sni=${ip}#${encodeURIComponent(u.username || 'hy2')}`;
   if (u.protocol === 'http') return `http://${u.username || ''}:${u.password || ''}@${ip}:${port}`;
@@ -1244,7 +1266,8 @@ async function saveUser() {
   const editingId = $('#editingUserId').val();
   saveBtn.prop('disabled', true).text(editingId ? '保存中...' : '创建中...');
   const proto = $('#userProtocol').val();
-  if (proto !== 'hysteria2') syncDefaultAccountPassword(false);
+  const uuidProto = ['vless', 'vmess'].includes(proto);
+  if (proto !== 'hysteria2' && !uuidProto) syncDefaultAccountPassword(false);
   const expireValue = ($('#userExpire').val() || '').trim();
   const defaultCredential = compactDateFromInput(expireValue);
   const chosenLines = selectedLineValues();
@@ -1261,7 +1284,7 @@ async function saveUser() {
     username: proto === 'hysteria2' ? 'hy2' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential)),
     owner_name: $('#userOwner').val().trim() || (proto === 'hysteria2' ? '' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential))),
     project_name: $('#userProject').val().trim(),
-    password: proto === 'hysteria2' ? '' : ($('#userPassword').val().trim() || defaultCredential),
+    password: proto === 'hysteria2' ? '' : ($('#userPassword').val().trim() || (uuidProto ? '' : defaultCredential)),
     protocol: proto,
     ss_method: proto === 'ss' ? $('#userSsMethod').val() : null,
     ss_password: proto === 'ss' ? ($('#userPassword').val().trim() || defaultCredential) : null,
@@ -1788,7 +1811,7 @@ $(async () => {
     syncDefaultAccountPassword(true);
   });
   $('#btnGenPwd').on('click', async () => {
-    const kind = $('#userProtocol').val() === 'vless' ? 'uuid' : '';
+    const kind = ['vless', 'vmess'].includes($('#userProtocol').val()) ? 'uuid' : '';
     const r = await api.get(`/api/users/gen-password${kind ? '?kind=uuid' : ''}`);
     if (r.ok) $('#userPassword').val(r.data);
   });
@@ -1805,7 +1828,7 @@ $(async () => {
     $('#userUsername').closest('div').toggle(!isHy2 && !isWg);
     $('#userPassword').closest('div').toggle(!isHy2 && !isWg);
     $('#accountLabel').text(isSs ? '加密方式' : '账号');
-    $('#passwordLabel').text(proto === 'vless' ? 'UUID' : '密码');
+    $('#passwordLabel').text(['vless', 'vmess'].includes(proto) ? 'UUID' : '密码');
     $('#userUsername').attr('placeholder', '默认使用到期日期');
     $('#userPassword').attr('placeholder', '默认使用到期日期');
     syncDefaultAccountPassword(false);

@@ -484,7 +484,8 @@ def _normalize_protocol(value: str) -> str:
         "hy": "hysteria2",
         "hysteria": "hysteria2",
         "hysteria-2": "hysteria2",
-        "vm": "vless",
+        "vm": "vmess",
+        "vmess": "vmess",
         "wg": "wireguard",
         "wireguard": "wireguard",
     }
@@ -1039,8 +1040,8 @@ def _create_user_v3():
     if protocol == "hysteria2":
         password = _gen_password(16)
     elif not password:
-        password = str(uuid.uuid4()) if protocol == "vless" else _gen_password(12)
-    elif protocol == "vless":
+        password = str(uuid.uuid4()) if protocol in {"vless", "vmess"} else _gen_password(12)
+    elif protocol in {"vless", "vmess"}:
         try:
             password = str(uuid.UUID(password))
         except ValueError:
@@ -1136,7 +1137,7 @@ def _create_user_v3():
                 listen_port = forced_port
             else:
                 listen_port = _random_available_port(s, used_ports)
-            user_password = str(uuid.uuid4()) if protocol == "vless" and not data.get("password") else password
+            user_password = str(uuid.uuid4()) if protocol in {"vless", "vmess"} and not data.get("password") else password
             if protocol == "wireguard":
                 user_password = "pending-wireguard-key"
             user = ProxyUser(
@@ -1668,6 +1669,11 @@ def update_user(uid):
                 return jsonify({"ok": False, "error": "请输入账号"}), 400
             if not password:
                 return jsonify({"ok": False, "error": "请输入密码"}), 400
+            if proto in {"vless", "vmess"}:
+                try:
+                    password = str(uuid.UUID(password))
+                except ValueError:
+                    return jsonify({"ok": False, "error": f"{proto.upper()} password must be UUID"}), 400
             user.ss_method = None
             user.ss_password = None
 

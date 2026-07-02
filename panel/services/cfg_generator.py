@@ -567,6 +567,20 @@ def generate_cfg(session=None) -> str:
                 })
                 _add_route(cfg, tag, out_tag)
 
+            for user in [u for u in line_users if u.protocol == "vmess"]:
+                listen_ip = listen_by_proto.get(user.protocol) or ""
+                if not listen_ip:
+                    continue
+                tag = _user_inbound_tag(user)
+                cfg["inbounds"].append({
+                    "type": "vmess",
+                    "tag": tag,
+                    "listen": listen_ip,
+                    "listen_port": _user_port(user),
+                    "users": [_uuid_user(user)],
+                })
+                _add_route(cfg, tag, out_tag)
+
             for user in [u for u in line_users if u.protocol == "trojan"]:
                 listen_ip = listen_by_proto.get(user.protocol) or ""
                 if not listen_ip:

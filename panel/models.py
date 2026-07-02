@@ -26,7 +26,7 @@ Base = declarative_base()
 engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
 
-PROTOCOL_TYPES = ["socks5", "http", "ss", "vless", "trojan", "hysteria2", "wireguard"]
+PROTOCOL_TYPES = ["socks5", "http", "ss", "vless", "vmess", "trojan", "hysteria2", "wireguard"]
 SS_METHODS = [
     "aes-256-gcm",
     "aes-128-gcm",
@@ -63,6 +63,8 @@ class Line(Base):
             return self.ss_port or (self.socks_port + 20)
         if proto == "vless":
             return 13000 + self.id
+        if proto == "vmess":
+            return 16000 + self.id
         if proto == "trojan":
             return 14000 + self.id
         if proto == "hysteria2":
@@ -79,6 +81,7 @@ class Line(Base):
             "http_port": self.http_port,
             "ss_port": self.ss_port,
             "vless_port": self.get_port_by_protocol("vless"),
+            "vmess_port": self.get_port_by_protocol("vmess"),
             "trojan_port": self.get_port_by_protocol("trojan"),
             "hysteria2_port": self.get_port_by_protocol("hysteria2"),
             "status": self.status,
@@ -135,6 +138,30 @@ class ProxyUser(Base):
             inbound_password = ss_password
         elif proto == "vless":
             link = f"vless://{self.password}@{host}:{port}?encryption=none&type=tcp#{self.username}"
+            field = f"{host}|{port}|{self.password}|{expire_date}"
+            inbound_user = self.username
+            inbound_password = self.password
+        elif proto == "vmess":
+            import base64
+            import json
+
+            payload = {
+                "v": "2",
+                "ps": self.username,
+                "add": host,
+                "port": str(port),
+                "id": self.password,
+                "aid": "0",
+                "scy": "auto",
+                "net": "tcp",
+                "type": "none",
+                "host": "",
+                "path": "",
+                "tls": "",
+                "sni": "",
+            }
+            encoded = base64.urlsafe_b64encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
+            link = f"vmess://{encoded}"
             field = f"{host}|{port}|{self.password}|{expire_date}"
             inbound_user = self.username
             inbound_password = self.password
@@ -197,6 +224,7 @@ class ProxyUser(Base):
             "http_port": self.line.http_port if self.line else None,
             "ss_port": self.line.ss_port if self.line else None,
             "vless_port": self.line.get_port_by_protocol("vless") if self.line else None,
+            "vmess_port": self.line.get_port_by_protocol("vmess") if self.line else None,
             "trojan_port": self.line.get_port_by_protocol("trojan") if self.line else None,
             "hysteria2_port": self.line.get_port_by_protocol("hysteria2") if self.line else None,
             "protocol": self.protocol,
