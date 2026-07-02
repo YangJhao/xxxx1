@@ -14,6 +14,7 @@ CENTER = {
     "password": "ping99!!",
 }
 FILES = [
+    ("panel/models.py", "panel/models.py"),
     ("panel/routes/users.py", "panel/routes/users.py"),
     ("panel/services/cfg_generator.py", "panel/services/cfg_generator.py"),
     ("panel/services/limit_manager.py", "panel/services/limit_manager.py"),
@@ -97,7 +98,7 @@ def sync_one(server):
             "if [ -d /opt/42IPwin ]; then printf /opt/42IPwin; elif [ -d /root/42IPwin ]; then printf /root/42IPwin; else pwd; fi",
         )
         app_dir = app_dir.strip() or "/opt/42IPwin"
-        run(client, f"mkdir -p {app_dir}/data/backups && cd {app_dir} && tar -czf data/backups/before-lite19-child-$(date +%Y%m%d-%H%M%S).tar.gz panel/routes/users.py panel/services/cfg_generator.py panel/services/limit_manager.py panel/services/proxy_manager.py panel/services/traffic_collector.py panel/templates/base.html panel/templates/users.html 2>/dev/null || true")
+        run(client, f"mkdir -p {app_dir}/data/backups && cd {app_dir} && tar -czf data/backups/before-lite-child-$(date +%Y%m%d-%H%M%S).tar.gz panel/models.py panel/routes/users.py panel/services/cfg_generator.py panel/services/limit_manager.py panel/services/proxy_manager.py panel/services/traffic_collector.py panel/templates/base.html panel/templates/users.html 2>/dev/null || true")
         sftp = client.open_sftp()
         try:
             for local_rel, remote_rel in FILES:
@@ -107,7 +108,7 @@ def sync_one(server):
                 sftp.put(local_path, remote_path)
         finally:
             sftp.close()
-        run(client, f"cd {app_dir} && python3 -m py_compile panel/routes/users.py panel/services/cfg_generator.py panel/services/limit_manager.py panel/services/proxy_manager.py panel/services/traffic_collector.py", timeout=90)
+        run(client, f"cd {app_dir} && python3 -m py_compile panel/models.py panel/routes/users.py panel/services/cfg_generator.py panel/services/limit_manager.py panel/services/proxy_manager.py panel/services/traffic_collector.py", timeout=90)
         run(client, "systemctl restart 42ipwin", timeout=90, check=False)
         _code, active, _err = run(client, "systemctl is-active 42ipwin", timeout=60, check=False)
         return server["ip"], active.strip()
