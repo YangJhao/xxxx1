@@ -13,11 +13,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from models import ProxyUser, TrafficLog, get_session
+from services import wireguard_manager
 
 CLASH_CONNECTIONS_URL = "http://127.0.0.1:9090/connections"
 _last_conn_totals: dict[str, tuple[int, int, int]] = {}
+_last_wg_totals: dict[int, tuple[int, int]] = {}
 _last_snapshot: dict[int, dict] = {}
 _last_snapshot_ts = 0.0
+_last_snapshot_error = ""
 
 
 def _user_tag(user: ProxyUser) -> str:
@@ -55,10 +58,19 @@ def _connection_tag(conn: dict) -> str:
 
 def snapshot_connections() -> dict[int, dict]:
     """Return current active connection counts and bytes by ProxyUser id."""
-    global _last_snapshot_ts
+    return snapshot_connections_status()["data"]
+
+
+def snapshot_connections_status() -> dict:
+    """Return current connection snapshot with freshness metadata.
+
+    On fetch failure, do not return stale counts as if they were live. The caller can
+    decide how to display the failure without misleading operators.
+    """
+    global _last_snapshot_ts, _last_snapshot_error
     now = time.time()
     if _last_snapshot and now - _last_snapshot_ts < 1.5:
-        return _last_snapshot.copy()
+        return {"ok": True, "stale": False, "error": "", "data": _last_snapshot.copy()}
 
     session = get_session()
     try:
@@ -69,8 +81,9 @@ def snapshot_connections() -> dict[int, dict]:
     result: dict[int, dict] = {}
     try:
         connections = _fetch_connections(timeout=0.5)
-    except Exception:
-        return _last_snapshot.copy()
+    except Exception as exc:
+        _last_snapshot_error = str(exc)
+        return {"ok": False, "stale": False, "error": _last_snapshot_error, "data": {}}
 
     for conn in connections:
         uid = users.get(_connection_tag(conn))
@@ -84,7 +97,8 @@ def snapshot_connections() -> dict[int, dict]:
     _last_snapshot.clear()
     _last_snapshot.update(result)
     _last_snapshot_ts = now
-    return result
+    _last_snapshot_error = ""
+    return {"ok": True, "stale": False, "error": "", "data": result.copy()}
 
 
 def collect_once() -> dict:
@@ -96,7 +110,7 @@ def collect_once() -> dict:
         session.close()
 
     try:
-        connections = _fetch_connections()
+        connections = _fetch_connections(timeout=0.5)
     except Exception:
         connections = []
 
@@ -138,6 +152,15 @@ def collect_once() -> dict:
     updated = 0
     try:
         hour = datetime.now().strftime("%Y-%m-%d %H")
+        wg_totals = wireguard_manager.transfer_snapshot(session)
+        for uid, (wg_rx, wg_tx) in wg_totals.items():
+            prev_rx, prev_tx = _last_wg_totals.get(uid, (wg_rx, wg_tx))
+            delta_rx = max(0, int(wg_rx) - int(prev_rx))
+            delta_tx = max(0, int(wg_tx) - int(prev_tx))
+            _last_wg_totals[uid] = (int(wg_rx), int(wg_tx))
+            if delta_rx or delta_tx:
+                old_up, old_down = deltas.get(uid, (0, 0))
+                deltas[uid] = (old_up + delta_tx, old_down + delta_rx)
         for user in session.query(ProxyUser).all():
             delta_upload, delta_download = deltas.get(user.id, (0, 0))
             if not delta_upload and not delta_download:

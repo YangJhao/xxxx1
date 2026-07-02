@@ -10,7 +10,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent                      # .../panel
 PROJECT_DIR = BASE_DIR.parent                                      # .../42IPwin
-APP_VERSION = "1.0.0.3"
+APP_VERSION = "1.0.0.5"
 IS_WINDOWS = platform.system().lower() == "windows"
 
 # ===== 目录 =====
@@ -28,12 +28,13 @@ SING_BOX_CERT = str(PROJECT_DIR / "sing-box" / "cert.pem")
 SING_BOX_KEY = str(PROJECT_DIR / "sing-box" / "key.pem")
 COUNTER_DIR = str(PROJECT_DIR / "data" / "counters")
 DATA_DIR = str(PROJECT_DIR / "data")
+WIREGUARD_DIR = str(PROJECT_DIR / "data" / "wireguard")
 
 PANEL_CFG_FILE = os.path.join(DATA_DIR, "panel_cfg.json")
 
 # ===== 后台管理 =====
 PANEL_HOST = "0.0.0.0"
-PANEL_PORT = 8080
+PANEL_PORT = int(os.environ.get("IPWIN42_PANEL_PORT", "8080"))
 PANEL_SECRET_KEY = "CHANGE-ME-PLEASE-IN-PROD-xxxxxxxxxxxxxxxxxx"
 
 # ===== 默认 SOCKS5 端口分配 =====
@@ -41,6 +42,10 @@ DEFAULT_SOCKS_PORTS = [10801, 10802, 10803]
 
 # ===== 日志 =====
 LOG_LEVEL = "INFO"
+
+
+def is_lite_mode() -> bool:
+    return os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
 
 
 # ---- Panel 运行配置（持久化）----

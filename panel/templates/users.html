@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}节点列表 - 42IPwin{% endblock %}
+{% block title %}{% if group_mode %}服务器管理{% else %}节点列表{% endif %} - 42IPwin{% endblock %}
 {% block content %}
 <div class="users-page">
   <div class="page-header">
-    <h2><i class="bi bi-hdd-stack"></i> 节点列表</h2>
+    <h2><i class="bi {% if group_mode %}bi-ui-checks-grid{% else %}bi-hdd-stack{% endif %}"></i> {% if group_mode %}服务器管理{% else %}节点列表{% endif %}</h2>
   </div>
 
   <div class="dash-metric-grid node-metric-grid mb-4">
@@ -27,16 +27,24 @@
 
   <div class="user-toolbar">
     <div class="toolbar-actions">
+      {% if not group_mode %}
       <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#userModal" id="btnNewUser"><i class="bi bi-plus-lg"></i> 批量创建</button>
-      <button class="btn btn-soft" id="btnSync"><i class="bi bi-arrow-repeat"></i> 同步</button>
       <button class="btn btn-danger" id="btnCleanExpired"><i class="bi bi-calendar-x"></i> 清理到期</button>
       <button class="btn btn-warning" id="btnBatchStop"><i class="bi bi-pause-circle"></i> 批量停止</button>
       <button class="btn btn-danger" id="btnBatchDelete"><i class="bi bi-trash3"></i> 批量删除</button>
-      <button class="btn btn-soft" id="btnBatchEditLimits"><i class="bi bi-sliders"></i> 批量编辑</button>
-      <button class="btn btn-soft" id="btnAssignUser"><i class="bi bi-person-check"></i> 分配用户</button>
-      <button class="btn btn-soft" id="btnAssignProject"><i class="bi bi-folder-check"></i> 分配项目</button>
       <button class="btn btn-soft" id="btnRenew"><i class="bi bi-calendar-plus"></i> 续费</button>
       <button class="btn btn-soft" id="btnExport"><i class="bi bi-download"></i> 导出</button>
+      {% else %}
+      <button class="btn btn-soft" id="btnSync"><i class="bi bi-arrow-repeat"></i> 同步</button>
+      <button class="btn btn-soft" id="btnBatchEditLimits"><i class="bi bi-sliders"></i> 批量编辑</button>
+      <button class="btn btn-soft" id="btnAssignUser"><i class="bi bi-person-check"></i> 分配用户</button>
+      <button class="btn btn-soft" id="btnAssignOperator"><i class="bi bi-person-badge"></i> 分配操作人</button>
+      <button class="btn btn-soft" id="btnAssignProject"><i class="bi bi-folder-check"></i> 分配项目</button>
+      <button class="btn btn-warning" id="btnBatchStop"><i class="bi bi-pause-circle"></i> 批量停止</button>
+      <button class="btn btn-danger" id="btnBatchDelete"><i class="bi bi-trash3"></i> 批量删除</button>
+      <button class="btn btn-soft" id="btnRenew"><i class="bi bi-calendar-plus"></i> 续费</button>
+      <button class="btn btn-soft" id="btnExport"><i class="bi bi-download"></i> 导出</button>
+      {% endif %}
     </div>
     <div class="toolbar-search">
       <textarea class="form-control search-multi" id="filterSearch" rows="1" placeholder="备注/项目/用户/协议/端口，支持一行一个批量搜索"></textarea>
@@ -58,6 +66,23 @@
     </div>
   </div>
 
+  {% if group_mode %}
+  <div class="group-control-strip">
+    <div>
+      <span>已选节点</span>
+      <strong id="groupSelectedCount">0</strong>
+    </div>
+    <div>
+      <span>当前筛选</span>
+      <strong id="groupMatchedCount">0</strong>
+    </div>
+    <div>
+      <span>批量入口</span>
+      <strong>勾选或粘贴结果匹配</strong>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="user-table-wrap">
     <table class="user-table node-table">
       <thead>
@@ -66,6 +91,7 @@
           <th>IP</th>
           <th>备注</th>
           <th>项目</th>
+          <th>操作人</th>
           <th>用户</th>
           <th>协议</th>
           <th>连接数</th>
@@ -148,15 +174,33 @@
 </div>
 
 <div class="modal fade" id="userModal" tabindex="-1">
-  <div class="modal-dialog modal-xl modal-dialog-centered">
+  <div class="modal-dialog modal-xl modal-dialog-centered create-node-dialog">
     <div class="modal-content modal-dark create-node-modal">
       <div class="modal-header create-modal-head"><h5 class="modal-title" id="userModalTitle">批量创建入站</h5><button class="btn btn-soft" data-bs-dismiss="modal">关闭</button></div>
       <div class="modal-body"><form id="userForm"><div class="create-form-grid">
         <input type="hidden" id="editingUserId">
-        <div><label class="form-label">项目</label><select class="form-select" id="userProject" required></select></div>
-        <div><label class="form-label">节点分类</label><select class="form-select" id="userLine" required></select></div>
-        <div><label class="form-label">归属用户</label><input class="form-control" id="userOwner" list="ownerOptions" placeholder="输入用户名，可自动筛选"><datalist id="ownerOptions"></datalist></div>
-        <div><label class="form-label">协议</label><select class="form-select" id="userProtocol" required><option value="socks5">SOCKS</option><option value="http">HTTP</option><option value="ss">Shadowsocks</option><option value="vless">VLESS</option><option value="trojan">Trojan</option><option value="hysteria2">Hysteria2</option></select></div>
+        <div><label class="form-label">项目</label><input class="form-control" id="userProject" placeholder="直接填写项目"></div>
+        <div><label class="form-label">用户</label><input class="form-control" id="userOwner" list="ownerOptions" placeholder="直接填写用户"><datalist id="ownerOptions"></datalist></div>
+        <div><label class="form-label">用户排除</label><input class="form-control" id="userExclude" list="ownerOptions" placeholder="填用户，排除已有该用户的节点"></div>
+        <div class="node-range-field">
+          <label class="form-label">节点范围</label>
+          <select class="form-select" id="nodeRange">
+            <option value="all_servers">全部可用节点</option>
+            <option value="manual">手动选择节点</option>
+          </select>
+        </div>
+        <div class="line-field node-picker-field">
+          <div class="node-picker-head">
+            <label class="form-check node-check-all">
+              <input class="form-check-input" type="checkbox" id="checkAllCreateNodes" checked>
+              <span>全选可用节点</span>
+            </label>
+            <strong id="availableNodeCount">可用 0 个</strong>
+          </div>
+          <select class="form-select d-none" id="userLine" multiple size="6" required></select>
+          <div class="node-picker-list" id="nodePickerList"></div>
+        </div>
+        <div class="protocol-field"><label class="form-label">协议</label><select class="form-select" id="userProtocol" required><option value="socks5">SOCKS</option><option value="http">HTTP</option><option value="ss">Shadowsocks</option><option value="vless">VLESS</option><option value="trojan">Trojan</option><option value="hysteria2">Hysteria2</option><option value="wireguard">WireGuard</option></select></div>
         <div class="custom-port-wrap"><label class="form-label">自定义端口</label><input class="form-control" id="userCustomPort" type="number" min="1025" max="65535" placeholder="留空随机 20000-50000"></div>
         <div><label class="form-label" id="accountLabel">协议账号</label><input class="form-control account-field" id="userUsername" placeholder="留空自动生成"><select class="form-select ss-method-field d-none" id="userSsMethod"><option value="aes-256-gcm">aes-256-gcm</option><option value="aes-128-gcm">aes-128-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option><option value="aes-256-cfb">aes-256-cfb</option><option value="aes-128-cfb">aes-128-cfb</option><option value="rc4-md5">rc4-md5</option></select></div>
         <div><label class="form-label" id="passwordLabel">密码</label><input class="form-control" id="userPassword" placeholder="留空自动生成"></div>
@@ -169,15 +213,16 @@
             <input class="form-control" id="userExpire" type="datetime-local">
           </div>
           <div class="expire-quick">
+            <button type="button" data-days="1" class="active">1天</button>
             <button type="button" data-days="7">7天</button>
-            <button type="button" data-days="30" class="active">30天</button>
+            <button type="button" data-days="30">30天</button>
             <button type="button" data-days="90">90天</button>
           </div>
         </div>
         <div><label class="form-label">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"></div>
         <div><label class="form-label">备注</label><input class="form-control" id="userNote" placeholder="写入 XUI 备注"></div>
       </div></form></div>
-      <div class="modal-footer create-modal-footer"><div class="form-check form-switch skip-switch" id="skipExistingWrap"><input class="form-check-input" type="checkbox" role="switch" id="userSkipExisting" checked><label class="form-check-label" for="userSkipExisting">跳过重复</label></div><button class="btn btn-primary create-submit" id="btnSaveUser">创建</button><button class="btn btn-soft" data-bs-dismiss="modal">取消</button></div>
+      <div class="modal-footer create-modal-footer"><button class="btn btn-primary create-submit" id="btnSaveUser">创建</button><button class="btn btn-soft" data-bs-dismiss="modal">取消</button></div>
     </div>
   </div>
 </div>
@@ -232,6 +277,7 @@
       <div class="modal-footer">
         <button class="btn btn-warning d-none" id="btnApplyProxyConfig">应用配置</button>
         <button class="btn btn-primary" id="btnCopyCreateResult">一键复制</button>
+        <button class="btn btn-primary d-none" id="btnDownloadCreateConfs">下载 CONF</button>
         <button class="btn btn-primary" id="btnDownloadCreateCsv">下载 CSV</button>
         <button class="btn btn-soft" data-bs-dismiss="modal">关闭</button>
       </div>
@@ -300,6 +346,27 @@
   </div>
 </div>
 
+<div class="modal fade" id="assignOperatorModal" tabindex="-1">
+  <div class="modal-dialog modal-md modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">批量分配操作人</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">操作人</label>
+        <input class="form-control" id="assignOperatorValue" list="operatorOptions" placeholder="选择或输入操作人">
+        <datalist id="operatorOptions"></datalist>
+        <div class="batch-match-hint" id="assignOperatorHint">已勾选 0 个节点</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnConfirmAssignOperator">确认分配</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="assignProjectModal" tabindex="-1">
   <div class="modal-dialog modal-md modal-dialog-centered">
     <div class="modal-content modal-dark batch-action-modal">
@@ -347,42 +414,231 @@
 <script>
 let allUsers = [];
 let allLines = [];
+let allManagedServers = [];
+let localServerIp = '';
 let allProjects = [];
 let allCustomers = [];
+let operatorOptions = [];
+let currentOperator = '';
 let currentInfoText = '';
 let currentPage = 1;
 let statusFilter = "all";
 let lastCreateResultText = '';
 let lastCreateResultCsv = '';
+let lastCreateResultRows = [];
 let pendingBatchLimitIds = [];
-const PROTO_LABELS = { socks5: 'SK5', http: 'HTTP', ss: 'SS', vless: 'VLESS', trojan: 'Trojan', hysteria2: 'HY2' };
+let pendingBatchDeleteIds = [];
+const IS_LITE_MODE = {{ 'true' if is_lite_mode else 'false' }};
+const PROTO_LABELS = { socks5: 'SK5', http: 'HTTP', ss: 'SS', vless: 'VLESS', trojan: 'Trojan', hysteria2: 'HY2', wireguard: 'WG' };
 
-async function loadLines() {
-  const r = await api.get('/api/lines');
-  if (!r.ok) return toast(r.error || '线路读取失败', 'error');
-  allLines = r.data || [];
-  const sel = $('#userLine').empty().append('<option value="">请选择IP</option><option value="all">全部IP</option>');
-  allLines.forEach(l => {
-    const marker = l.is_master ? ' 静默主网卡' : '';
-    sel.append(`<option value="${l.id}">${escapeHtml(l.public_ip)} ${escapeHtml(l.name || '')}${marker}</option>`);
+
+function syncNodePickerFromSelect() {
+  const values = selectedLineValues();
+  const servers = visibleManagedServers();
+  const allSelected = values.includes('all_servers') || (servers.length > 0 && servers.every(server => values.includes(`server:${server.id}`)));
+  $('#checkAllCreateNodes').prop('checked', allSelected);
+  $('.node-picker-card').each(function() {
+    const value = this.dataset.value;
+    const checked = allSelected || values.includes(value);
+    $(this).toggleClass('active', checked);
+    $(this).find('input[type="checkbox"]').prop('checked', checked);
   });
 }
 
+function setCreateNodeSelection(values) {
+  $('#userLine').val(values);
+  syncNodePickerFromSelect();
+}
+
+function serverHasExcludedUser(server) {
+  const needle = ($('#userExclude').val() || '').trim().toLowerCase();
+  if (!needle) return false;
+  return (server.inbound_assignments || []).some(item => String(item || '').toLowerCase().includes(needle));
+}
+
+function localHasExcludedUser() {
+  const needle = ($('#userExclude').val() || '').trim().toLowerCase();
+  if (!needle) return false;
+  const localIp = localServerIp || location.hostname || '';
+  const localServer = (allManagedServers || []).find(server => server.is_local || String(server.ip || '') === String(localIp));
+  const assignments = localServer ? (localServer.inbound_assignments || []) : [];
+  if (assignments.some(item => String(item || '').toLowerCase().includes(needle))) return true;
+  return (allUsers || []).some(user => {
+    if (String(user.id || '').startsWith('remote:')) return false;
+    return String(user.owner_name || user.username || '').toLowerCase().includes(needle);
+  });
+}
+
+function visibleManagedServers() {
+  return (allManagedServers || [])
+    .filter(server => !serverHasExcludedUser(server))
+    .filter(server => !server.is_local)
+    .slice()
+    .sort((a, b) => {
+      const diff = Number(a.inbound_count || 0) - Number(b.inbound_count || 0);
+      if (diff) return diff;
+      return String(a.ip || '').localeCompare(String(b.ip || ''), 'zh-CN', { numeric: true });
+    });
+}
+
+function canUseLocalLite() {
+  return IS_LITE_MODE;
+}
+
+function localInboundSummary() {
+  const localIp = localServerIp || location.hostname || '';
+  const localServer = (allManagedServers || []).find(server => server.is_local || String(server.ip || '') === String(localIp));
+  if (localServer) {
+    const inboundCount = Number(localServer.inbound_count || 0);
+    const assignments = (localServer.inbound_assignments || []).slice(0, 6).join('  ');
+    return assignments ? `入站 ${inboundCount} 个 / ${assignments}` : `入站 ${inboundCount} 个 / 本机`;
+  }
+  const count = (allUsers || []).filter(user => !String(user.id || '').startsWith('remote:')).length;
+  return `入站 ${count} 个 / 本机`;
+}
+
+function defaultCreateSelection() {
+  const values = [];
+  if (canUseLocalLite()) values.push('lite');
+  visibleManagedServers().forEach(server => values.push(`server:${server.id}`));
+  if (!values.length && allLines.length) values.push('all');
+  return values.length ? values : ['lite'];
+}
+
+function renderCreateNodePicker() {
+  const box = $('#nodePickerList').empty();
+  const showLocalLite = canUseLocalLite() && !localHasExcludedUser();
+  const localCount = showLocalLite ? 1 : 0;
+  const localIp = localServerIp || location.hostname || '本机公网 IP';
+  if (allManagedServers.length) {
+    const servers = visibleManagedServers();
+    $('#availableNodeCount').text(`可用 ${servers.length + localCount} 个`);
+    if (showLocalLite) {
+      box.append(`
+        <label class="node-picker-card local-node-card active" data-value="lite">
+          <input class="form-check-input" type="checkbox" checked>
+          <span class="node-main">${escapeHtml(localIp)} <em class="local-node-badge">本机</em></span>
+          <span class="node-sub">${escapeHtml(localInboundSummary())}</span>
+        </label>
+      `);
+    }
+    servers.forEach(server => {
+      const state = server.install_status === 'installed' ? '已安装' : (server.status || 'unknown');
+      const inboundCount = Number(server.inbound_count || 0);
+      const assignments = (server.inbound_assignments || []).slice(0, 6).join('  ');
+      const subText = assignments ? `入站 ${inboundCount} 个 / ${assignments}` : `入站 ${inboundCount} 个 / ${state}`;
+      box.append(`
+        <label class="node-picker-card active" data-value="server:${server.id}">
+          <input class="form-check-input" type="checkbox" checked>
+          <span class="node-main">${escapeHtml(server.ip)}</span>
+          <span class="node-sub">${escapeHtml(subText)}</span>
+        </label>
+      `);
+    });
+    setCreateNodeSelection(defaultCreateSelection());
+    return;
+  }
+  const options = allLines.map(line => ({
+    value: String(line.id),
+    ip: line.public_ip,
+    sub: `${line.public_ip} / 入站 ${Number(line.user_count || 0)} 个`,
+  }));
+  if (!options.length && showLocalLite) {
+    $('#availableNodeCount').text('可用 1 个');
+    box.append(`
+      <label class="node-picker-card local-node-card active" data-value="lite">
+        <input class="form-check-input" type="checkbox" checked>
+        <span class="node-main">${escapeHtml(localIp)} <em class="local-node-badge">本机</em></span>
+        <span class="node-sub">${escapeHtml(localInboundSummary())}</span>
+      </label>
+    `);
+    setCreateNodeSelection(['lite']);
+    return;
+  }
+  $('#availableNodeCount').text(`可用 ${options.length} 个`);
+  options.forEach(item => {
+    box.append(`
+      <label class="node-picker-card active" data-value="${escapeHtml(item.value)}">
+        <input class="form-check-input" type="checkbox" checked>
+        <span class="node-main">${escapeHtml(item.ip)}</span>
+        <span class="node-sub">${escapeHtml(item.sub)}</span>
+      </label>
+    `);
+  });
+  setCreateNodeSelection(['all']);
+}
+
+async function loadLines() {
+  if (IS_LITE_MODE) {
+    const sr = await api.get('/api/servers');
+    if (sr.ok && (sr.servers || []).length) {
+      allManagedServers = sr.servers || [];
+      localServerIp = sr.local_ip || localServerIp || location.hostname;
+      allLines = [];
+      const sel = $('#userLine').empty().append('<option value="all_servers">全部服务器</option>');
+      if (canUseLocalLite()) sel.append('<option value="lite">本机</option>');
+      visibleManagedServers().forEach(server => {
+        const state = server.install_status === 'installed' ? '已安装' : (server.status || 'unknown');
+        const inboundCount = Number(server.inbound_count || 0);
+        const assignments = (server.inbound_assignments || []).slice(0, 3).join(' ');
+        sel.append(`<option value="server:${server.id}">${escapeHtml(server.ip)} 入站 ${inboundCount} 个 ${escapeHtml(assignments || state)}</option>`);
+      });
+      $('.line-field').removeClass('d-none').show();
+      renderCreateNodePicker();
+      return;
+    }
+  }
+  const r = await api.get('/api/lines');
+  if (!r.ok) {
+    if (IS_LITE_MODE) {
+      allLines = [];
+      $('#userLine').html('<option value="lite" selected>本机公网 IP</option>');
+      $('.line-field').removeClass('d-none').show();
+      renderCreateNodePicker();
+      return;
+    }
+    return toast(r.error || '线路读取失败', 'error');
+  }
+  allLines = r.data || [];
+  if (IS_LITE_MODE && !allLines.length) {
+    $('#userLine').html('<option value="lite" selected>本机公网 IP</option>');
+    $('.line-field').removeClass('d-none').show();
+    renderCreateNodePicker();
+    return;
+  }
+  const sel = $('#userLine').empty().append('<option value="all">全部IP</option>');
+  allLines.forEach(l => {
+    const marker = l.is_master ? ' 默认主网卡' : '';
+    sel.append(`<option value="${l.id}">${escapeHtml(l.public_ip)} ${escapeHtml(l.name || '')}${marker}</option>`);
+  });
+  $('.line-field').removeClass('d-none').show();
+  renderCreateNodePicker();
+}
 async function loadProjects() {
+  if (IS_LITE_MODE) return;
   const r = await api.get('/api/projects');
   if (!r.ok) return;
   allProjects = (r.data || []).filter(p => p.status !== 0);
   const opts = ['<option value="">请选择项目</option>'].concat(
     allProjects.map(p => `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`)
   );
-  $('#userProject,#assignProjectValue').html(opts.join(''));
+  $('#assignProjectValue').html(opts.join(''));
 }
 
 async function loadCustomers() {
+  if (IS_LITE_MODE) return;
   const r = await api.get('/api/node-customers');
   if (!r.ok) return;
   allCustomers = r.data || [];
   refreshOwnerOptions();
+}
+
+async function loadOperatorOptions() {
+  const r = await api.get('/api/operator-options');
+  if (!r.ok) return;
+  operatorOptions = r.data || [];
+  currentOperator = r.current || operatorOptions[0] || '';
+  $('#operatorOptions').html(operatorOptions.map(name => `<option value="${escapeHtml(name)}"></option>`).join(''));
 }
 
 function refreshOwnerOptions() {
@@ -394,13 +650,23 @@ function refreshOwnerOptions() {
 }
 
 async function loadUsers() {
-  const r = await api.get('/api/users');
+  const r = await api.get(`/api/users?_=${Date.now()}`);
   if (!r.ok) return toast(r.error || '节点读取失败', 'error');
   allUsers = r.data || [];
   refreshOwnerOptions();
   updateNodeStats();
   currentPage = 1;
   renderUsers();
+}
+
+function applyInitialNodeFilters() {
+  const params = new URLSearchParams(location.search || '');
+  const serverIp = params.get('server_ip') || params.get('ip') || '';
+  if (serverIp) {
+    $('#filterSearch').val(serverIp);
+    currentPage = 1;
+    renderUsers();
+  }
 }
 
 function portFor(u) {
@@ -417,6 +683,8 @@ function outputLine(u) {
   const ip = u.line_ip || '';
   const port = portFor(u);
   const expire = formatDate(u.expire_at);
+  if (u.protocol === 'hysteria2') return `${ip}|${port}|${expire}`;
+  if (u.protocol === 'wireguard') return `${ip}|${port}|wireguard|${u.username || ''}|${expire}`;
   if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}|${expire}`;
   return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
 }
@@ -424,9 +692,10 @@ function outputLine(u) {
 function protocolUri(u) {
   const ip = u.line_ip || '';
   const port = portFor(u);
+  if (u.protocol === 'wireguard') return `${ip}:${port} ${u.username || ''}.conf`;
   if (u.protocol === 'vless') return `vless://${u.password}@${ip}:${port}?encryption=none&type=tcp#${encodeURIComponent(u.username || 'vless')}`;
   if (u.protocol === 'trojan') return `trojan://${u.password}@${ip}:${port}?security=tls&allowInsecure=1&sni=${ip}#${encodeURIComponent(u.username || 'trojan')}`;
-  if (u.protocol === 'hysteria2') return `hysteria2://${u.password}@${ip}:${port}?insecure=1&sni=${ip}#${encodeURIComponent(u.username || 'hy2')}`;
+  if (u.protocol === 'hysteria2') return `hysteria2://${ip}:${port}?insecure=1&sni=${ip}#${encodeURIComponent(u.username || 'hy2')}`;
   if (u.protocol === 'http') return `http://${u.username || ''}:${u.password || ''}@${ip}:${port}`;
   if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}`;
   return `socks5://${u.username || ''}:${u.password || ''}@${ip}:${port}`;
@@ -453,8 +722,8 @@ function createResultCsv(rows) {
   const body = (rows || []).map(u => {
     const ip = u.line_ip || '';
     const port = portFor(u);
-    const account = u.protocol === 'ss' ? (u.ss_method || 'aes-256-gcm') : (u.username || '');
-    const password = u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || '');
+    const account = u.protocol === 'hysteria2' ? '' : (u.protocol === 'ss' ? (u.ss_method || 'aes-256-gcm') : (u.username || ''));
+    const password = u.protocol === 'hysteria2' ? '' : (u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || ''));
     return [ip, port, account, password, formatDate(u.expire_at)].map(csvEscape).join(',');
   });
   return [header.join(','), ...body].join('\n');
@@ -462,6 +731,7 @@ function createResultCsv(rows) {
 
 function showCreateResult(data) {
   const rows = data.created || [];
+  lastCreateResultRows = rows;
   const errors = data.errors || [];
   const skipped = data.skipped || [];
   const applyStatus = data.apply_status || {};
@@ -470,14 +740,15 @@ function showCreateResult(data) {
   lastCreateResultCsv = createResultCsv(rows);
   const summary = [];
   if (rows.length) summary.push(`<div class="result-ok">成功 ${rows.length} 条</div>`);
-  if (applyStatus.message && !applyStatus.applied) summary.push(`<div class="result-error">配置未应用：${escapeHtml(applyStatus.message)}</div>`);
-  if (applyStatus.message && applyStatus.applied && applyStatus.restarted) summary.push(`<div class="result-ok">${escapeHtml(applyStatus.message)}</div>`);
+  if (applyStatus.message && !applyStatus.applied) summary.push(`<div class="result-error">自动应用失败：${escapeHtml(applyStatus.message)}</div>`);
+  if (applyStatus.applied) summary.push(`<div class="result-ok">${escapeHtml(applyStatus.message || '已自动应用配置，创建完成即可使用')}</div>`);
   if (skipped.length) summary.push(`<div class="text-muted">跳过 ${skipped.length} 条：</div><div class="result-errors text-muted">${skipped.map(escapeHtml).join('<br>')}</div>`);
   if (errors.length) summary.push(`<div class="result-error">失败 ${errors.length} 条：</div><div class="result-errors">${errors.map(escapeHtml).join('<br>')}</div>`);
   if (!rows.length && !errors.length && !skipped.length) summary.push('<div class="text-muted">没有成功创建的入站。</div>');
   $('#createResultSummary').html(summary.join(''));
   $('#createResultBox').text(lines.length ? lines.join('\n') : '没有成功创建的入站。');
-  $('#btnApplyProxyConfig').toggleClass('d-none', !applyStatus.message || applyStatus.applied);
+  $('#btnApplyProxyConfig').addClass('d-none');
+  $('#btnDownloadCreateConfs').toggleClass('d-none', !rows.some(row => row.protocol === 'wireguard'));
   new bootstrap.Modal(document.getElementById('createResultModal')).show();
 }
 
@@ -494,9 +765,10 @@ function searchBlob(u) {
   return [
     u.line_ip,
     String(portFor(u)),
-    u.note,
+    displayNote(u),
     u.line_name,
     u.username,
+    u.operator,
     u.owner_name,
     u.project_name,
     PROTO_LABELS[u.protocol],
@@ -540,7 +812,12 @@ function matchedUsers() {
       return terms.some(term => term.includes('|') ? matchesStructuredTerm(u, term) : hay.includes(term));
     });
   }
-  return rows;
+  return rows.slice().sort((a, b) => {
+    const at = Date.parse(a.created_at || '') || 0;
+    const bt = Date.parse(b.created_at || '') || 0;
+    if (bt !== at) return bt - at;
+    return String(b.id || '').localeCompare(String(a.id || ''), 'zh-CN', { numeric: true });
+  });
 }
 
 function pagedUsers() {
@@ -560,6 +837,14 @@ function updatePagination(meta) {
   $('#pageNumber').text(`${currentPage} / ${meta.totalPages}`);
   $('#btnFirstPage, #btnPrevPage').prop('disabled', currentPage <= 1);
   $('#btnNextPage, #btnLastPage').prop('disabled', currentPage >= meta.totalPages);
+  updateGroupControlStrip(meta);
+}
+
+function updateGroupControlStrip(meta = null) {
+  const selected = selectedIds().length;
+  const matched = meta ? meta.rows.length : matchedUsers().length;
+  $('#groupSelectedCount').text(selected);
+  $('#groupMatchedCount').text(matched);
 }
 
 function formatDate(value) {
@@ -571,11 +856,20 @@ function formatDate(value) {
 
 function isExpired(u) { return u.expire_at && new Date(u.expire_at) < new Date(); }
 function nodeStatusOf(u) {
-  if (isExpired(u)) return { text: '到期', cls: 'expired', toggle: false };
-  if (!u.status) return { text: '停用', cls: 'off', toggle: true };
-  return { text: '启用', cls: 'on', toggle: true };
+  if (isExpired(u)) return { text: '到期', action: '', cls: 'expired', toggle: false };
+  if (!u.status) return { text: '已停用', action: '启用', cls: 'off', toggle: true };
+  return { text: '运行中', action: '停用', cls: 'on', toggle: true };
 }
 function maskPassword(value) { const text = String(value || ''); return text ? (text.length <= 8 ? '***' : text.slice(0, 6) + '***') : '-'; }
+
+function displayNote(u) {
+  const text = String((u && u.note) || '');
+  const publicLines = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && !/^wg_/i.test(line));
+  return publicLines.join('\n');
+}
 
 function parseTrafficLimit(value) {
   const text = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
@@ -632,25 +926,27 @@ function renderUsers() {
   $('#checkAll').prop('checked', false);
   updatePagination(meta);
   if (!meta.pageRows.length) {
-    tb.append('<tr><td colspan="14" class="empty-cell">暂无节点</td></tr>');
+    tb.append('<tr><td colspan="15" class="empty-cell">暂无节点</td></tr>');
     return;
   }
   meta.pageRows.forEach(u => {
+    const rowId = escapeHtml(String(u.id));
     const state = nodeStatusOf(u);
     const statusPill = state.toggle
-      ? `<button class="state-pill ${state.cls} clickable" onclick="toggleNodeStatus(${u.id})">${state.text}</button>`
+      ? `<button class="state-pill ${state.cls} clickable" title="当前状态：${state.text}，点击${state.action}" onclick="toggleNodeStatus('${rowId}', this)">${state.action}</button>`
       : `<span class="state-pill ${state.cls}">${state.text}</span>`;
     const account = u.protocol === 'ss' ? (u.ss_method || 'aes-256-gcm') : u.username;
     const password = u.protocol === 'ss' ? (u.ss_password || u.password) : u.password;
     tb.append(`
       <tr>
-        <td class="check-col"><input class="form-check-input row-check" type="checkbox" value="${u.id}"></td>
+        <td class="check-col"><input class="form-check-input row-check" type="checkbox" value="${rowId}"></td>
         <td><div class="ip-cell">${statusPill}<button class="ip-link js-goto-line" data-line-id="${u.line_id || 0}" data-ip="${escapeHtml(u.line_ip || '')}">${escapeHtml(u.line_ip || '-')}</button></div></td>
-        <td>${escapeHtml(u.note || '-')}</td>
+        <td>${escapeHtml(displayNote(u) || '-')}</td>
         <td>${escapeHtml(u.project_name || u.line_name || '-')}</td>
+        <td><span class="operator-pill">${escapeHtml(u.operator || '-')}</span></td>
         <td>${escapeHtml(u.owner_name || u.username || '-')}</td>
         <td><span class="proto-pill">${escapeHtml(PROTO_LABELS[u.protocol] || u.protocol || '-')}</span></td>
-        <td><span class="port-pill">${escapeHtml(u.connections || 0)}</span></td>
+        <td><span class="port-pill" title="${escapeHtml(u.traffic_source || '')}">${u.traffic_available ? escapeHtml(u.connections || 0) : '--'}</span></td>
         <td>${escapeHtml(portFor(u))}</td>
         <td>${escapeHtml(account || '-')}</td>
         <td class="password-cell">${escapeHtml(maskPassword(password))}</td>
@@ -658,15 +954,16 @@ function renderUsers() {
         <td>${trafficCell(u)}</td>
         <td>${escapeHtml(formatDate(u.expire_at))}</td>
         <td class="line-actions">
-          <button class="mini-btn" onclick="copyNode(${u.id}, this)">复制</button>
-          <button class="mini-btn" onclick="showInfo(${u.id})">信息</button>
+          <button class="mini-btn" onclick="copyNode('${rowId}', this)">复制</button>
+          <button class="mini-btn" onclick="showInfo('${rowId}')">信息</button>
+          ${u.protocol === 'wireguard' ? `<button class="mini-btn" onclick="downloadWireGuardConf('${rowId}')">CONF</button>` : ''}
         </td>
       </tr>
     `);
   });
 }
 
-function selectedIds() { return $('.row-check:checked').map((_, el) => parseInt(el.value, 10)).get(); }
+function selectedIds() { return $('.row-check:checked').map((_, el) => String(el.value || '')).get().filter(Boolean); }
 function changePage(page) { currentPage = page; renderUsers(); }
 
 function parseBatchLines(text) {
@@ -713,6 +1010,7 @@ function matchLineToIds(line) {
       u.password,
       u.ss_password,
       u.note,
+      u.operator,
       u.owner_name,
       u.project_name,
     ].map(v => String(v || '').toLowerCase()).includes(token))
@@ -726,19 +1024,24 @@ function idsFromText(text) {
 }
 
 function combinedIds(textSelector) {
-  const checked = selectedIds();
+  const checked = textSelector === '#batchDeleteText' && pendingBatchDeleteIds.length ? pendingBatchDeleteIds : selectedIds();
   const pasted = idsFromText($(textSelector).val());
   return [...new Set(checked.concat(pasted))];
 }
 
 function setBatchHint(hintSelector, textSelector = null) {
-  const checked = selectedIds().length;
+  const checkedIds = textSelector === '#batchDeleteText' && pendingBatchDeleteIds.length ? pendingBatchDeleteIds : selectedIds();
+  const checked = checkedIds.length;
   const pasted = textSelector ? idsFromText($(textSelector).val()).length : 0;
   const total = textSelector ? combinedIds(textSelector).length : checked;
   $(hintSelector).text(textSelector ? `已勾选 ${checked} 个，粘贴匹配 ${pasted} 个，合计 ${total} 个` : `已勾选 ${checked} 个节点`);
 }
 
 function openBatchDeleteModal() {
+  pendingBatchDeleteIds = selectedIds();
+  if (!pendingBatchDeleteIds.length) {
+    return toast('请选择要删除的节点', 'error');
+  }
   $('#batchDeleteText').val('');
   setBatchHint('#batchDeleteHint', '#batchDeleteText');
   new bootstrap.Modal(document.getElementById('batchDeleteModal')).show();
@@ -755,6 +1058,13 @@ function openAssignUserModal() {
   $('#assignUserValue').val('');
   setBatchHint('#assignUserHint');
   new bootstrap.Modal(document.getElementById('assignUserModal')).show();
+}
+
+function openAssignOperatorModal() {
+  if (!selectedIds().length) return toast('请先勾选要分配的节点', 'error');
+  $('#assignOperatorValue').val(currentOperator);
+  setBatchHint('#assignOperatorHint');
+  new bootstrap.Modal(document.getElementById('assignOperatorModal')).show();
 }
 
 function openAssignProjectModal() {
@@ -850,6 +1160,12 @@ function syncDefaultAccountPassword(force = false) {
   if (force || !$('#userPassword').val().trim()) $('#userPassword').val(dateValue);
 }
 
+function selectedLineValues() {
+  const values = $('#userLine').val();
+  if (Array.isArray(values)) return values.filter(Boolean);
+  return values ? [values] : [];
+}
+
 function applyCustomerNote() {
   const name = ($('#userOwner').val() || '').trim();
   const customer = allCustomers.find(c => c.name === name);
@@ -863,20 +1179,19 @@ function resetForm() {
   $('#userModalTitle').text('批量创建入站');
   $('#btnSaveUser').text('创建');
   $('#userCount').closest('div').show();
-  $('#skipExistingWrap').show();
   $('#userProtocol,#userLine').prop('disabled', false);
   $('#userUsername,#userPassword').val('');
-  $('#userCustomPort,#userNote,#userOwner').val('');
+  $('#userCustomPort,#userNote,#userOwner,#userExclude').val('');
   $('#userSpeedLimit').val('20m');
   $('#userTrafficLimit').val('130g');
-  $('#userExpire').val(expireDateFromDays(30));
+  $('#userExpire').val(expireDateFromDays(1));
   $('.expire-quick button').removeClass('active');
-  $('.expire-quick button[data-days="30"]').addClass('active');
+  $('.expire-quick button[data-days="1"]').addClass('active');
   $('#userProject').val('');
-  $('#userProtocol').val('socks5').trigger('change');
-  $('#userLine').val('all');
+  $('#userProtocol').val(arguments[0] || 'socks5').trigger('change');
+  $('#nodeRange').val('all_servers');
+  setCreateNodeSelection(defaultCreateSelection());
   $('#userCount').val(1);
-  $('#userSkipExisting').prop('checked', true);
   syncDefaultAccountPassword(true);
 }
 
@@ -890,7 +1205,7 @@ function toDatetimeLocal(value) {
 }
 
 function openEditUser(id) {
-  const u = allUsers.find(x => x.id === id);
+  const u = allUsers.find(x => String(x.id) === String(id));
   if (!u) return toast('节点不存在', 'error');
   $('#editLimitUserId').val(u.id);
   $('#editSpeedLimit').val(u.speed_limit || '20m');
@@ -927,29 +1242,42 @@ async function saveUser() {
   const editingId = $('#editingUserId').val();
   saveBtn.prop('disabled', true).text(editingId ? '保存中...' : '创建中...');
   const proto = $('#userProtocol').val();
-  syncDefaultAccountPassword(false);
+  if (proto !== 'hysteria2') syncDefaultAccountPassword(false);
   const expireValue = ($('#userExpire').val() || '').trim();
   const defaultCredential = compactDateFromInput(expireValue);
+  const chosenLines = selectedLineValues();
+  const lineValues = chosenLines.length ? chosenLines : (IS_LITE_MODE ? ['lite'] : []);
+  const useAllLines = lineValues.includes('all');
+  const useLiteLine = lineValues.includes('lite');
+  const useAllServers = lineValues.includes('all_servers');
+  const serverIds = useAllServers ? visibleManagedServers().map(server => String(server.id)) : lineValues.filter(value => String(value).startsWith('server:')).map(value => String(value).split(':')[1]).filter(Boolean);
+  const selectedLineIds = lineValues.filter(value => !String(value).startsWith('server:'));
+  const hasRemoteTargets = serverIds.length > 0;
+  const localCount = useLiteLine ? 1 : 0;
+  const remoteCount = hasRemoteTargets ? Math.max(0, parseInt($('#userCount').val() || '1', 10) - localCount) : 0;
   const data = {
-    username: proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential),
-    owner_name: $('#userOwner').val().trim() || (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential)),
+    username: proto === 'hysteria2' ? 'hy2' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential)),
+    owner_name: $('#userOwner').val().trim() || (proto === 'hysteria2' ? '' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential))),
     project_name: $('#userProject').val().trim(),
-    password: $('#userPassword').val().trim() || defaultCredential,
+    password: proto === 'hysteria2' ? '' : ($('#userPassword').val().trim() || defaultCredential),
     protocol: proto,
     ss_method: proto === 'ss' ? $('#userSsMethod').val() : null,
     ss_password: proto === 'ss' ? ($('#userPassword').val().trim() || defaultCredential) : null,
-    line_id: $('#userLine').val(),
-    custom_port: $('#userCustomPort').val() || null,
+    line_id: useLiteLine ? 'lite' : (hasRemoteTargets ? '' : (useAllLines ? 'all' : (selectedLineIds[0] || ''))),
+    line_ids: (!hasRemoteTargets && !useLiteLine && !useAllLines) ? selectedLineIds : [],
+    server_ids: serverIds,
+    local_count: localCount,
+    remote_count: remoteCount,
+    custom_port: proto === 'hysteria2' ? null : ($('#userCustomPort').val() || null),
     speed_limit: normalizeSpeedInput($('#userSpeedLimit').val()),
     traffic_limit: $('#userTrafficLimit').val().trim(),
     expire_at: expireValue || null,
     count: parseInt($('#userCount').val() || '1', 10),
-    skip_existing: $('#userSkipExisting').prop('checked'),
     note: $('#userNote').val().trim(),
   };
   try {
-    if (!data.line_id) return toast('请选择IP', 'error');
-    if (!data.project_name) return toast('请选择项目', 'error');
+    if (!data.line_id && !(data.line_ids || []).length && !(data.server_ids || []).length) return toast('请选择IP', 'error');
+    if (!data.project_name) return toast('请填写项目', 'error');
     if (editingId) {
       data.listen_port = data.custom_port;
       const r = await api.put(`/api/users/${editingId}`, data);
@@ -964,8 +1292,9 @@ async function saveUser() {
     const limitQueued = r.data.limit_queued || 0;
     toast(`创建成功 ${r.data.created_count || 0} 个节点${limitQueued ? `，${limitQueued} 个限速后台下发中` : ''}`, 'success', 4500);
     bootstrap.Modal.getInstance(document.getElementById('userModal')).hide();
-    showCreateResult(r.data || {});
     await loadUsers();
+    await loadLines();
+    showCreateResult(r.data || {});
   } finally {
     saveBtn.prop('disabled', false).text(oldText);
   }
@@ -993,21 +1322,40 @@ async function cleanExpired() {
 
 async function batchDelete() {
   const ids = combinedIds('#batchDeleteText');
-  if (!ids.length) return toast('请勾选节点，或在文本框粘贴要删除的 IP/端口/账号', 'error');
+  if (!ids.length) return toast('请选择要删除的节点', 'error');
   if (!confirm(`确定删除 ${ids.length} 个节点？`)) return;
-  const r = await api.post('/api/users/batch-delete', { ids });
-  if (!r.ok) return toast(r.error || '批量删除失败', 'error');
-  toast(`已删除 ${r.data.deleted || 0} 个节点`, 'success');
-  bootstrap.Modal.getInstance(document.getElementById('batchDeleteModal'))?.hide();
-  await loadUsers();
+  const btn = $('#btnConfirmBatchDelete');
+  const old = btn.text();
+  btn.prop('disabled', true).text('删除中...');
+  try {
+    const r = await api.post('/api/users/batch-delete', { ids });
+    if (!r.ok) return toast(r.error || '批量删除失败', 'error');
+    const errors = (r.data && r.data.errors) || [];
+    toast(`已删除 ${r.data.deleted || 0} 个节点${errors.length ? `，失败 ${errors.length} 个` : ''}`, errors.length ? 'error' : 'success', 5000);
+    pendingBatchDeleteIds = [];
+    bootstrap.Modal.getInstance(document.getElementById('batchDeleteModal'))?.hide();
+    await loadUsers();
+    await loadLines();
+  } finally {
+    btn.prop('disabled', false).text(old);
+  }
 }
 
 async function deleteNode(id) {
   if (!confirm('确定删除这个节点？')) return;
+  if (String(id).startsWith('remote:')) {
+    const rr = await api.post('/api/users/batch-delete', { ids: [id] });
+    if (!rr.ok) return toast(rr.error || '删除失败', 'error');
+    toast('已删除节点', 'success');
+    await loadUsers();
+    await loadLines();
+    return;
+  }
   const r = await api.del(`/api/users/${id}`);
   if (!r.ok) return toast(r.error || '删除失败', 'error');
   toast('已删除节点', 'success');
   await loadUsers();
+  await loadLines();
 }
 
 async function assignUser() {
@@ -1019,6 +1367,18 @@ async function assignUser() {
   if (!r.ok) return toast(r.error || '分配用户失败', 'error');
   toast(`已分配 ${r.data.updated || 0} 个节点`, 'success');
   bootstrap.Modal.getInstance(document.getElementById('assignUserModal'))?.hide();
+  await loadUsers();
+}
+
+async function assignOperator() {
+  const ids = selectedIds();
+  if (!ids.length) return toast('请选择节点', 'error');
+  const operator = $('#assignOperatorValue').val().trim();
+  if (!operator) return toast('操作人必填', 'error');
+  const r = await api.post('/api/users/batch-assign-operator', { ids, operator });
+  if (!r.ok) return toast(r.error || '分配操作人失败', 'error');
+  toast(`已分配 ${r.data.updated || 0} 个节点的操作人`, 'success');
+  bootstrap.Modal.getInstance(document.getElementById('assignOperatorModal'))?.hide();
   await loadUsers();
 }
 
@@ -1071,7 +1431,7 @@ function updateNodeStats() {
 
 function exportText() {
   const ids = selectedIds();
-  const source = ids.length ? allUsers.filter(u => ids.includes(u.id)) : matchedUsers();
+  const source = ids.length ? allUsers.filter(u => ids.map(String).includes(String(u.id))) : matchedUsers();
   const rows = source.map(outputLine);
   if (!rows.length) return toast('没有可导出的数据', 'error');
   const proto = $('#filterProtocol').val() || 'all';
@@ -1079,7 +1439,7 @@ function exportText() {
 }
 
 async function copyNode(id, btn) {
-  const u = allUsers.find(x => x.id === id);
+  const u = allUsers.find(x => String(x.id) === String(id));
   const ok = await copyText(u ? outputLine(u) : '');
   if (ok && btn) {
     const old = btn.textContent;
@@ -1088,13 +1448,91 @@ async function copyNode(id, btn) {
   }
 }
 
-async function toggleNodeStatus(id) {
-  const r = await api.post(`/api/users/${id}/toggle`, {});
-  if (!r.ok) return toast(r.error || '切换节点状态失败', 'error');
-  await loadUsers();
+async function toggleNodeStatus(id, btn) {
+  const before = allUsers.find(x => String(x.id) === String(id));
+  const beforeStatus = !!(before && before.status);
+  const oldText = btn ? btn.textContent : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '处理中...';
+  }
+  try {
+    const r = await api.post(`/api/users/${id}/toggle`, {});
+    if (!r.ok) return toast(r.error || '切换节点状态失败', 'error', 5000);
+    await loadUsers();
+    const after = allUsers.find(x => String(x.id) === String(id));
+    const nowStatus = after ? !!after.status : !beforeStatus;
+    toast(nowStatus ? '节点已启用' : '节点已停用', 'success');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
+}
+
+function filenameFromDisposition(disposition, fallback) {
+  const text = String(disposition || '');
+  const utf8 = text.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8) {
+    try { return decodeURIComponent(utf8[1]); } catch (e) {}
+  }
+  const ascii = text.match(/filename="?([^";]+)"?/i);
+  return ascii ? ascii[1] : fallback;
+}
+
+async function downloadUrl(url, fallbackName) {
+  const res = await fetch(url, { credentials: 'same-origin' });
+  const contentType = res.headers.get('content-type') || '';
+  if (!res.ok) {
+    let message = `下载失败 HTTP ${res.status}`;
+    try {
+      const data = contentType.includes('application/json') ? await res.json() : null;
+      if (data && (data.error || data.message)) message = data.error || data.message;
+    } catch (e) {}
+    toast(message, 'error', 6000);
+    return false;
+  }
+  if (contentType.includes('application/json')) {
+    const data = await res.json();
+    toast(data.error || data.message || '下载失败', 'error', 6000);
+    return false;
+  }
+  const blob = await res.blob();
+  if (!blob.size) {
+    toast('下载失败：文件为空', 'error', 6000);
+    return false;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filenameFromDisposition(res.headers.get('content-disposition'), fallbackName);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  return true;
+}
+
+async function downloadWireGuardConf(id) {
+  if (!id) return;
+  const url = String(id).startsWith('remote:')
+    ? `/api/users/remote-wireguard.conf?id=${encodeURIComponent(id)}`
+    : `/api/users/${id}/wireguard.conf`;
+  const ok = await downloadUrl(url, 'wireguard.conf');
+  if (ok) toast('CONF 配置已下载', 'success');
+}
+
+async function downloadCreateConfs() {
+  const rows = lastCreateResultRows.filter(row => row.protocol === 'wireguard');
+  if (!rows.length) return toast('没有 WireGuard 配置可下载', 'error');
+  const ids = rows.map(row => row.id || (row.managed_server_id && row.local_id ? `remote:${row.managed_server_id}:${row.local_id}` : '')).filter(Boolean).join(',');
+  if (!ids) return toast('没有 WireGuard 配置可下载', 'error');
+  const ok = await downloadUrl(`/api/users/wireguard.zip?ids=${encodeURIComponent(ids)}`, 'wireguard-confs.zip');
+  if (ok) toast(`已下载 ${rows.length} 个 CONF 配置包`, 'success');
 }
 
 function gotoLine(lineId, ip) {
+  if (IS_LITE_MODE) return;
   const params = new URLSearchParams();
   if (lineId) params.set('line_id', lineId);
   if (ip) params.set('ip', ip);
@@ -1158,7 +1596,7 @@ async function testVisibleUsers() {
 }
 
 async function showInfo(id) {
-  const u = allUsers.find(x => x.id === id);
+  const u = allUsers.find(x => String(x.id) === String(id));
   if (!u) return;
   const r = await api.get(`/api/users/${id}/connection-info`);
   if (!r.ok) return toast(r.error || '读取信息失败', 'error');
@@ -1233,7 +1671,12 @@ async function applyProxyConfig(btn) {
 }
 
 $(async () => {
-  await Promise.all([loadLines(), loadProjects(), loadUsers(), loadCustomers()]);
+  await loadLines();
+  await loadUsers();
+  applyInitialNodeFilters();
+  Promise.all([loadProjects(), loadCustomers(), loadOperatorOptions()]).then(() => {
+    refreshOwnerOptions();
+  });
   $('#btnNewUser').on('click', resetForm);
   $('#btnSaveUser').on('click', saveUser);
   $('#btnSaveLimitEdit').on('click', saveLimitEdit);
@@ -1243,18 +1686,21 @@ $(async () => {
     if (!lastCreateResultCsv) return toast('没有可下载的创建结果', 'error');
     downloadText('create-result.csv', lastCreateResultCsv, 'text/csv;charset=utf-8');
   });
+  $('#btnDownloadCreateConfs').on('click', downloadCreateConfs);
   $('#btnSync').on('click', syncUsers);
   $('#btnCleanExpired').on('click', cleanExpired);
   $('#btnBatchStop').on('click', openBatchStopModal);
   $('#btnBatchDelete').on('click', openBatchDeleteModal);
   $('#btnBatchEditLimits').on('click', openBatchLimitModal);
   $('#btnAssignUser').on('click', openAssignUserModal);
+  $('#btnAssignOperator').on('click', openAssignOperatorModal);
   $('#btnAssignProject').on('click', openAssignProjectModal);
   $('#btnRenew').on('click', openRenewModal);
   $('#btnConfirmBatchDelete').on('click', batchDelete);
   $('#btnConfirmBatchStop').on('click', batchStop);
   $('#btnConfirmBatchLimit').on('click', batchEditLimits);
   $('#btnConfirmAssignUser').on('click', assignUser);
+  $('#btnConfirmAssignOperator').on('click', assignOperator);
   $('#btnConfirmAssignProject').on('click', assignProject);
   $('#btnConfirmRenew').on('click', renewNodes);
   $('#batchDeleteText').on('input', () => setBatchHint('#batchDeleteHint', '#batchDeleteText'));
@@ -1267,15 +1713,68 @@ $(async () => {
     syncDefaultAccountPassword(false);
   });
   $('#userOwner').on('input change', applyCustomerNote);
-  $('.node-metric-grid .dash-metric-card').on('click', function() { statusFilter = $(this).data('status-filter') || 'all'; currentPage = 1; renderUsers(); document.querySelector('.user-table-wrap').scrollIntoView({behavior:'smooth', block:'start'}); });
+  $('#userExclude').on('input change', function() {
+    renderCreateNodePicker();
+    $('#nodeRange').val('all_servers');
+  });
+  $('#nodeRange').on('change', function() {
+    if ($(this).val() === 'all_servers') {
+      setCreateNodeSelection(defaultCreateSelection());
+    } else {
+      const values = $('.node-picker-card input:checked').map((_, el) => $(el).closest('.node-picker-card').data('value')).get();
+      setCreateNodeSelection(values);
+    }
+  });
+  $('#checkAllCreateNodes').on('change', function() {
+    const checked = this.checked;
+    $('#nodeRange').val(checked ? 'all_servers' : 'manual');
+    if (checked) {
+      setCreateNodeSelection(defaultCreateSelection());
+    } else {
+      setCreateNodeSelection([]);
+    }
+  });
+  $('#nodePickerList').on('change', '.node-picker-card input', function() {
+    $('#nodeRange').val('manual');
+    const values = $('.node-picker-card input:checked').map((_, el) => $(el).closest('.node-picker-card').data('value')).get();
+    setCreateNodeSelection(values);
+  });
+  $('#nodePickerList').on('click', '.node-picker-card', function(event) {
+    event.preventDefault();
+    const input = $(this).find('input[type="checkbox"]');
+    input.prop('checked', !input.prop('checked')).trigger('change');
+  });
+  $('.node-metric-grid .dash-metric-card').on('click', function() {
+    statusFilter = $(this).data('status-filter') || 'all';
+    currentPage = 1;
+    renderUsers();
+    document.querySelector('.user-table-wrap')?.scrollIntoView({behavior:'smooth', block:'start'});
+  });
   $('#pageSize').on('change', () => { currentPage = 1; renderUsers(); });
   $('#btnFirstPage').on('click', () => changePage(1));
   $('#btnPrevPage').on('click', () => changePage(currentPage - 1));
   $('#btnNextPage').on('click', () => changePage(currentPage + 1));
   $('#btnLastPage').on('click', () => changePage(pagedUsers().totalPages));
-  $('#checkAll').on('change', function() { $('.row-check').prop('checked', this.checked); setBatchHint('#batchDeleteHint', '#batchDeleteText'); setBatchHint('#batchStopHint', '#batchStopText'); setBatchHint('#renewHint', '#renewText'); setBatchHint('#assignUserHint'); setBatchHint('#assignProjectHint'); });
-  $('#userTable').on('change', '.row-check', () => { setBatchHint('#batchDeleteHint', '#batchDeleteText'); setBatchHint('#batchStopHint', '#batchStopText'); setBatchHint('#renewHint', '#renewText'); setBatchHint('#assignUserHint'); setBatchHint('#assignProjectHint'); });
-  $('#userTable').on('click', '.js-goto-line', function() { gotoLine(Number($(this).data('line-id') || 0), String($(this).data('ip') || '')); });
+  $('#checkAll').on('change', function() {
+    $('.row-check').prop('checked', this.checked);
+    setBatchHint('#batchDeleteHint', '#batchDeleteText');
+    setBatchHint('#batchStopHint', '#batchStopText');
+    setBatchHint('#renewHint', '#renewText');
+    setBatchHint('#assignUserHint');
+    setBatchHint('#assignOperatorHint');
+    setBatchHint('#assignProjectHint');
+  });
+  $('#userTable').on('change', '.row-check', () => {
+    setBatchHint('#batchDeleteHint', '#batchDeleteText');
+    setBatchHint('#batchStopHint', '#batchStopText');
+    setBatchHint('#renewHint', '#renewText');
+    setBatchHint('#assignUserHint');
+    setBatchHint('#assignOperatorHint');
+    setBatchHint('#assignProjectHint');
+  });
+  $('#userTable').on('click', '.js-goto-line', function() {
+    gotoLine(Number($(this).data('line-id') || 0), String($(this).data('ip') || ''));
+  });
   $('.expire-quick').on('click', 'button', function() {
     const days = $(this).data('days');
     $('.expire-quick button').removeClass('active');
@@ -1291,9 +1790,15 @@ $(async () => {
   $('#userProtocol').on('change', function() {
     const proto = $(this).val();
     const isSs = proto === 'ss';
+    const isHy2 = proto === 'hysteria2';
+    const isWg = proto === 'wireguard';
+    $('.protocol-field').show();
+    $('.line-field').removeClass('d-none').show();
     $('.account-field').toggleClass('d-none', isSs);
     $('.ss-method-field').toggleClass('d-none', !isSs);
     $('.custom-port-wrap').toggle(['socks5', 'http', 'ss'].includes(proto));
+    $('#userUsername').closest('div').toggle(!isHy2 && !isWg);
+    $('#userPassword').closest('div').toggle(!isHy2 && !isWg);
     $('#accountLabel').text(isSs ? '加密方式' : '账号');
     $('#passwordLabel').text(proto === 'vless' ? 'UUID' : '密码');
     $('#userUsername').attr('placeholder', '默认使用到期日期');

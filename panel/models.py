@@ -1,4 +1,6 @@
 """SQLite data models for 42IPwin."""
+import hashlib
+import hmac
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +26,7 @@ Base = declarative_base()
 engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
 
-PROTOCOL_TYPES = ["socks5", "http", "ss", "vless", "trojan", "hysteria2"]
+PROTOCOL_TYPES = ["socks5", "http", "ss", "vless", "trojan", "hysteria2", "wireguard"]
 SS_METHODS = [
     "aes-256-gcm",
     "aes-128-gcm",
@@ -55,6 +57,8 @@ class Line(Base):
         proto = (proto or "socks5").lower()
         if proto == "http":
             return self.http_port or (self.socks_port + 10)
+        if proto == "wireguard":
+            return self.socks_port
         if proto == "ss":
             return self.ss_port or (self.socks_port + 20)
         if proto == "vless":
@@ -95,6 +99,7 @@ class ProxyUser(Base):
     protocol = Column(String(16), default="socks5")
     listen_port = Column(Integer, nullable=True)
     ss_method = Column(String(32), nullable=True)
+    operator = Column(String(64), nullable=True)
     owner_name = Column(String(96), nullable=True)
     project_name = Column(String(96), nullable=True)
     speed_limit = Column(String(32), nullable=True)
@@ -197,6 +202,7 @@ class ProxyUser(Base):
             "protocol": self.protocol,
             "listen_port": self._port() if self.line else self.listen_port,
             "ss_method": self.ss_method,
+            "operator": self.operator,
             "owner_name": self.owner_name,
             "project_name": self.project_name,
             "speed_limit": self.speed_limit,
@@ -241,10 +247,13 @@ class AdminUser(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     def set_password(self, raw):
-        self.password_hash = generate_password_hash(raw)
+        self.password_hash = generate_password_hash(raw, method="pbkdf2:sha256")
 
     def check_password(self, raw):
-        return check_password_hash(self.password_hash, raw)
+        try:
+            return check_password_hash(self.password_hash, raw)
+        except ValueError:
+            return _check_scrypt_password_hash(self.password_hash, raw)
 
     def to_dict(self):
         return {
@@ -257,6 +266,24 @@ class AdminUser(Base):
             "is_super": self.is_super,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+def _check_scrypt_password_hash(stored_hash, raw):
+    try:
+        method, salt, hashval = stored_hash.split("$", 2)
+        prefix, n, r, p = method.split(":", 3)
+        if prefix != "scrypt":
+            return False
+        candidate = hashlib.scrypt(
+            raw.encode("utf-8"),
+            salt=salt.encode("utf-8"),
+            n=int(n),
+            r=int(r),
+            p=int(p),
+        ).hex()
+        return hmac.compare_digest(candidate, hashval)
+    except Exception:
+        return False
 
 
 class Project(Base):
@@ -345,6 +372,41 @@ class OperationLog(Base):
         }
 
 
+class ManagedServer(Base):
+    __tablename__ = "managed_servers"
+
+    id = Column(Integer, primary_key=True)
+    ip = Column(String(64), nullable=False)
+    ssh_port = Column(Integer, default=22)
+    username = Column(String(64), default="root")
+    password = Column(String(256), default="")
+    group_name = Column(String(96), default="")
+    status = Column(String(32), default="unknown")
+    install_status = Column(String(32), default="idle")
+    last_error = Column(Text, default="")
+    note = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self, hide_password=True):
+        data = {
+            "id": self.id,
+            "ip": self.ip,
+            "ssh_port": self.ssh_port,
+            "username": self.username,
+            "group_name": self.group_name or "",
+            "status": self.status or "unknown",
+            "install_status": self.install_status or "idle",
+            "last_error": self.last_error or "",
+            "note": self.note or "",
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+        if not hide_password:
+            data["password"] = self.password or ""
+        return data
+
+
 def _migrate_db():
     alter_lines = [
         ("http_port", "INTEGER"),
@@ -355,6 +417,7 @@ def _migrate_db():
         ("protocol", "TEXT DEFAULT 'socks5'"),
         ("listen_port", "INTEGER"),
         ("ss_method", "TEXT"),
+        ("operator", "TEXT"),
         ("owner_name", "TEXT"),
         ("project_name", "TEXT"),
         ("speed_limit", "TEXT"),
@@ -369,6 +432,13 @@ def _migrate_db():
     from sqlalchemy import text
 
     with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE managed_servers ADD COLUMN group_name TEXT"))
+            print("[migrate] + managed_servers.group_name")
+        except Exception as e:
+            msg = str(e).lower()
+            if "duplicate" not in msg and "already" not in msg and "exist" not in msg:
+                print(f"[migrate] ! managed_servers.group_name: {e}")
         for col_name, col_type in alter_proxy:
             try:
                 conn.execute(text(f"ALTER TABLE proxy_users ADD COLUMN {col_name} {col_type}"))
@@ -422,6 +492,7 @@ def _migrate_db():
                     protocol TEXT DEFAULT 'socks5',
                     listen_port INTEGER,
                     ss_method TEXT,
+                    operator TEXT,
                     owner_name TEXT,
                     project_name TEXT,
                     speed_limit TEXT,
@@ -438,12 +509,12 @@ def _migrate_db():
             conn.execute(text("""
                 INSERT INTO proxy_users_new (
                     id, username, password, ss_password, line_id, protocol, listen_port,
-                    ss_method, owner_name, project_name, speed_limit, traffic_limit,
+                    ss_method, operator, owner_name, project_name, speed_limit, traffic_limit,
                     status, expire_at, bytes_in, bytes_out, note, created_at
                 )
                 SELECT
                     id, username, password, ss_password, line_id, protocol, listen_port,
-                    ss_method, owner_name, project_name, speed_limit, traffic_limit,
+                    ss_method, operator, owner_name, project_name, speed_limit, traffic_limit,
                     status, expire_at, bytes_in, bytes_out, note, created_at
                 FROM proxy_users
             """))

@@ -1,0 +1,492 @@
+﻿{% extends "base.html" %}
+{% block title %}服务器管理 - 42IPwin{% endblock %}
+{% block content %}
+<div class="users-page servers-page">
+  <div class="page-header">
+    <h2><i class="bi bi-ui-checks-grid"></i> 服务器管理</h2>
+  </div>
+
+  <div class="dash-metric-grid node-metric-grid mb-4">
+    <section class="dash-metric-card">
+      <div class="dash-metric-label">服务器总数</div>
+      <div class="dash-metric-value blue" id="serverStatTotal">0</div>
+    </section>
+    <section class="dash-metric-card">
+      <div class="dash-metric-label">在线</div>
+      <div class="dash-metric-value green" id="serverStatOnline">0</div>
+    </section>
+    <section class="dash-metric-card">
+      <div class="dash-metric-label">已安装</div>
+      <div class="dash-metric-value green" id="serverStatInstalled">0</div>
+    </section>
+    <section class="dash-metric-card">
+      <div class="dash-metric-label">异常</div>
+      <div class="dash-metric-value red" id="serverStatError">0</div>
+    </section>
+  </div>
+
+  <div class="user-toolbar">
+    <div class="toolbar-actions">
+      <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#serverModal" id="btnAddServer"><i class="bi bi-plus-lg"></i> 批量添加服务器</button>
+      <button class="btn btn-warning" id="btnInstallSelected"><i class="bi bi-cloud-arrow-up"></i> 一键安装42轻量</button>
+      <button class="btn btn-soft" id="btnTestSelected"><i class="bi bi-wifi"></i> 测试连接</button>
+      <button class="btn btn-soft" id="btnRefreshServers"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+      <button class="btn btn-soft" id="btnGroupSelected"><i class="bi bi-folder"></i> 批量分组</button>
+      <button class="btn btn-danger" id="btnDeleteSelected"><i class="bi bi-trash3"></i> 批量删除</button>
+    </div>
+    <div class="toolbar-search">
+      <textarea class="form-control search-multi" id="serverSearch" rows="1" placeholder="搜索 IP / 账号 / 状态"></textarea>
+      <select class="form-select" id="serverGroupFilter">
+        <option value="">全部分组</option>
+      </select>
+      <select class="form-select" id="pageSize">
+        <option value="20">20条</option>
+        <option value="50">50条</option>
+        <option value="100">100条</option>
+        <option value="500">500条</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="group-control-strip">
+    <div>
+      <span>已选服务器</span>
+      <strong id="serverSelectedCount">0</strong>
+    </div>
+    <div>
+      <span>当前匹配</span>
+      <strong id="serverMatchedCount">0</strong>
+    </div>
+    <div>
+      <span>安装方式</span>
+      <strong>上传本地 install_lite.sh 后执行</strong>
+    </div>
+  </div>
+
+  <div class="user-table-wrap">
+    <table class="user-table server-table">
+      <thead>
+        <tr>
+          <th class="check-col"><input class="form-check-input" type="checkbox" id="checkAllServers"></th>
+          <th>IP</th>
+          <th>分组</th>
+          <th>端口</th>
+          <th>账号</th>
+          <th>入站数量</th>
+          <th>连接状态</th>
+          <th>安装状态</th>
+          <th>备注 / 输出</th>
+          <th>更新时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="serverTable"></tbody>
+    </table>
+  </div>
+
+  <div class="user-pagination">
+    <div class="page-summary" id="pageSummary">共 0 条</div>
+    <div class="page-controls">
+      <button class="mini-btn" id="btnFirstPage"><i class="bi bi-chevron-bar-left"></i></button>
+      <button class="mini-btn" id="btnPrevPage"><i class="bi bi-chevron-left"></i></button>
+      <span class="page-number" id="pageNumber">1 / 1</span>
+      <button class="mini-btn" id="btnNextPage"><i class="bi bi-chevron-right"></i></button>
+      <button class="mini-btn" id="btnLastPage"><i class="bi bi-chevron-bar-right"></i></button>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="serverModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">批量添加服务器</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label">服务器 IP</label>
+          <textarea class="form-control server-ip-input" id="serverIps" rows="8" placeholder="一行一个 IP，也支持逗号或空格分隔"></textarea>
+        </div>
+        <div class="server-form-grid">
+          <div>
+            <label class="form-label">端口</label>
+            <input class="form-control" id="serverPort" type="number" min="1" max="65535" value="22">
+          </div>
+          <div>
+            <label class="form-label">账号</label>
+            <input class="form-control" id="serverUsername" value="root">
+          </div>
+          <div>
+            <label class="form-label">密码</label>
+            <input class="form-control" id="serverPassword" type="password" autocomplete="new-password">
+          </div>
+          <div>
+            <label class="form-label">分组</label>
+            <input class="form-control" id="serverGroup" placeholder="例如 韩国/日本/客户A">
+          </div>
+          <div>
+            <label class="form-label">备注</label>
+            <input class="form-control" id="serverNote" placeholder="可选">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveServers">保存服务器</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="serverEditModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">编辑服务器</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="editServerId">
+        <div class="server-form-grid">
+          <div><label class="form-label">IP</label><input class="form-control" id="editServerIp"></div>
+          <div><label class="form-label">端口</label><input class="form-control" id="editServerPort" type="number" min="1" max="65535"></div>
+          <div><label class="form-label">账号</label><input class="form-control" id="editServerUsername"></div>
+          <div><label class="form-label">密码</label><input class="form-control" id="editServerPassword" type="password" autocomplete="new-password" placeholder="留空不修改"></div>
+          <div><label class="form-label">分组</label><input class="form-control" id="editServerGroup"></div>
+          <div><label class="form-label">备注</label><input class="form-control" id="editServerNote"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnSaveServerEdit">保存</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="serverGroupModal" tabindex="-1">
+  <div class="modal-dialog modal-md modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">批量分组</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="batch-match-hint mb-3" id="serverGroupHint">已选择 0 台服务器</div>
+        <label class="form-label">分组名称</label>
+        <input class="form-control" id="batchServerGroup" placeholder="留空则设为未分组">
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnConfirmServerGroup">保存</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  let servers = [];
+  let currentPage = 1;
+  const selected = new Set();
+
+  const els = {
+    table: document.getElementById('serverTable'),
+    search: document.getElementById('serverSearch'),
+    pageSize: document.getElementById('pageSize'),
+    pageSummary: document.getElementById('pageSummary'),
+    pageNumber: document.getElementById('pageNumber'),
+    groupFilter: document.getElementById('serverGroupFilter'),
+    checkAll: document.getElementById('checkAllServers'),
+    selectedCount: document.getElementById('serverSelectedCount'),
+    matchedCount: document.getElementById('serverMatchedCount'),
+  };
+
+  function statusBadge(value) {
+    const text = value || 'unknown';
+    if (text === 'online' || text === 'installed') return `<span class="badge bg-success">${escapeHtml(text)}</span>`;
+    if (text === 'error' || text === 'failed') return `<span class="badge bg-danger">${escapeHtml(text)}</span>`;
+    if (text === 'installing') return `<span class="badge bg-warning">${escapeHtml(text)}</span>`;
+    return `<span class="badge bg-secondary">${escapeHtml(text)}</span>`;
+  }
+
+  function filtered() {
+    const q = (els.search.value || '').trim().toLowerCase();
+    const group = els.groupFilter.value || '';
+    let rows = servers;
+    if (group) rows = rows.filter(s => (s.group_name || '') === group);
+    if (!q) return rows;
+    return rows.filter(s => [s.ip, s.group_name, s.username, s.status, s.install_status, s.note, s.last_error].some(v => String(v || '').toLowerCase().includes(q)));
+  }
+
+  function refreshGroups() {
+    const current = els.groupFilter.value || '';
+    const groups = Array.from(new Set(servers.map(s => s.group_name || '').filter(Boolean))).sort();
+    els.groupFilter.innerHTML = '<option value="">全部分组</option>' + groups.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
+    if (groups.includes(current)) els.groupFilter.value = current;
+  }
+
+  function selectedIds() {
+    return Array.from(selected).map(v => parseInt(v, 10)).filter(Boolean);
+  }
+
+  function updateStats(rows) {
+    document.getElementById('serverStatTotal').textContent = servers.length;
+    document.getElementById('serverStatOnline').textContent = servers.filter(s => s.status === 'online').length;
+    document.getElementById('serverStatInstalled').textContent = servers.filter(s => s.install_status === 'installed').length;
+    document.getElementById('serverStatError').textContent = servers.filter(s => s.status === 'error' || s.install_status === 'failed').length;
+    els.selectedCount.textContent = selected.size;
+    els.matchedCount.textContent = rows.length;
+  }
+
+  function render() {
+    const rows = filtered();
+    const size = parseInt(els.pageSize.value || '20', 10);
+    const pages = Math.max(1, Math.ceil(rows.length / size));
+    currentPage = Math.min(Math.max(1, currentPage), pages);
+    const start = (currentPage - 1) * size;
+    const pageRows = rows.slice(start, start + size);
+    updateStats(rows);
+    els.table.innerHTML = pageRows.map(row => `
+      <tr>
+        <td class="check-col"><input class="form-check-input row-check" type="checkbox" data-id="${row.id}" ${selected.has(String(row.id)) ? 'checked' : ''}></td>
+        <td><strong>${escapeHtml(row.ip)}</strong></td>
+        <td>${escapeHtml(row.group_name || '未分组')}</td>
+        <td>${escapeHtml(row.ssh_port)}</td>
+        <td>${escapeHtml(row.username)}</td>
+        <td><button class="count-link" data-action="view-nodes" data-ip="${escapeHtml(row.ip)}">${Number(row.inbound_count || 0)}</button></td>
+        <td>${statusBadge(row.status)}</td>
+        <td>${statusBadge(row.install_status)}</td>
+        <td class="server-note" title="${escapeHtml(row.last_error || row.note || '')}">${escapeHtml(row.last_error || row.note || '-')}</td>
+        <td>${escapeHtml((row.updated_at || row.created_at || '').replace('T', ' ').slice(0, 19))}</td>
+        <td>
+          <div class="line-actions">
+            <button class="mini-btn warning" data-action="install" data-id="${row.id}">安装</button>
+            <button class="mini-btn" data-action="test" data-id="${row.id}">测试</button>
+            <button class="mini-btn" data-action="edit" data-id="${row.id}">编辑</button>
+            <button class="mini-btn danger" data-action="delete" data-id="${row.id}">删除</button>
+          </div>
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="11" class="text-center text-muted py-4">暂无服务器</td></tr>';
+    els.pageSummary.textContent = `共 ${rows.length} 条，显示 ${pageRows.length} 条`;
+    els.pageNumber.textContent = `${currentPage} / ${pages}`;
+    els.checkAll.checked = pageRows.length > 0 && pageRows.every(row => selected.has(String(row.id)));
+    document.getElementById('btnFirstPage').disabled = currentPage <= 1;
+    document.getElementById('btnPrevPage').disabled = currentPage <= 1;
+    document.getElementById('btnNextPage').disabled = currentPage >= pages;
+    document.getElementById('btnLastPage').disabled = currentPage >= pages;
+  }
+
+  async function loadServers() {
+    const res = await api.get('/api/servers');
+    if (!res.ok) {
+      toast(res.error || '加载服务器失败', 'error');
+      return;
+    }
+    servers = res.servers || [];
+    refreshGroups();
+    render();
+  }
+
+  async function runAction(url, ids, successText) {
+    if (!ids.length) {
+      toast('请选择服务器', 'error');
+      return;
+    }
+    const res = await api.post(url, { ids });
+    if (!res.ok) {
+      toast(res.error || '操作失败', 'error', 4000);
+      return;
+    }
+    toast(successText, 'success');
+    await loadServers();
+  }
+
+  async function runServerAction(url, ids, successText, options = {}) {
+    if (!ids.length) {
+      toast('请选择服务器', 'error');
+      return;
+    }
+    const buttons = Array.from(document.querySelectorAll(options.selector || ''))
+      .filter(btn => !options.id || Number(btn.dataset.id) === Number(options.id));
+    const oldLabels = buttons.map(btn => btn.textContent);
+    buttons.forEach(btn => {
+      btn.disabled = true;
+      btn.textContent = options.loadingText || '处理中...';
+    });
+    if (options.markInstalling) {
+      servers = servers.map(row => ids.includes(Number(row.id)) ? { ...row, install_status: 'installing', last_error: '安装任务执行中，请稍等...' } : row);
+      render();
+    }
+    toast(options.startText || '任务已提交，正在执行...', 'info', 4000);
+    try {
+      const res = await api.post(url, { ids });
+      if (!res.ok) {
+        toast(res.error || '操作失败', 'error', 6000);
+        return;
+      }
+      toast(successText, 'success', 5000);
+      await loadServers();
+    } finally {
+      buttons.forEach((btn, index) => {
+        btn.disabled = false;
+        btn.textContent = oldLabels[index] || '操作';
+      });
+    }
+  }
+
+  function openEditServer(id) {
+    const row = servers.find(s => Number(s.id) === Number(id));
+    if (!row) return toast('服务器不存在', 'error');
+    document.getElementById('editServerId').value = row.id;
+    document.getElementById('editServerIp').value = row.ip || '';
+    document.getElementById('editServerPort').value = row.ssh_port || 22;
+    document.getElementById('editServerUsername').value = row.username || 'root';
+    document.getElementById('editServerPassword').value = '';
+    document.getElementById('editServerGroup').value = row.group_name || '';
+    document.getElementById('editServerNote').value = row.note || '';
+    new bootstrap.Modal(document.getElementById('serverEditModal')).show();
+  }
+
+  async function saveServerEdit() {
+    const id = document.getElementById('editServerId').value;
+    const payload = {
+      ip: document.getElementById('editServerIp').value,
+      port: document.getElementById('editServerPort').value,
+      username: document.getElementById('editServerUsername').value,
+      password: document.getElementById('editServerPassword').value,
+      group_name: document.getElementById('editServerGroup').value,
+      note: document.getElementById('editServerNote').value,
+    };
+    const res = await api.put(`/api/servers/${id}`, payload);
+    if (!res.ok) return toast(res.error || '保存失败', 'error');
+    bootstrap.Modal.getInstance(document.getElementById('serverEditModal'))?.hide();
+    toast('已保存', 'success');
+    await loadServers();
+  }
+
+  document.getElementById('btnSaveServers').addEventListener('click', async () => {
+    const payload = {
+      ips: document.getElementById('serverIps').value,
+      port: document.getElementById('serverPort').value,
+      username: document.getElementById('serverUsername').value,
+      password: document.getElementById('serverPassword').value,
+      group_name: document.getElementById('serverGroup').value,
+      note: document.getElementById('serverNote').value,
+    };
+    const res = await api.post('/api/servers', payload);
+    if (!res.ok) {
+      toast(res.error || '保存失败', 'error');
+      return;
+    }
+    bootstrap.Modal.getOrCreateInstance(document.getElementById('serverModal')).hide();
+    document.getElementById('serverIps').value = '';
+    toast(`已添加 ${res.count || 0} 台服务器`, 'success');
+    await loadServers();
+  });
+
+  els.table.addEventListener('change', e => {
+    if (!e.target.classList.contains('row-check')) return;
+    const id = e.target.dataset.id;
+    if (e.target.checked) selected.add(id);
+    else selected.delete(id);
+    render();
+  });
+
+  els.checkAll.addEventListener('change', () => {
+    const rows = filtered();
+    const size = parseInt(els.pageSize.value || '20', 10);
+    rows.slice((currentPage - 1) * size, currentPage * size).forEach(row => {
+      if (els.checkAll.checked) selected.add(String(row.id));
+      else selected.delete(String(row.id));
+    });
+    render();
+  });
+
+  els.table.addEventListener('click', async e => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    if (btn.dataset.action === 'view-nodes') {
+      const ip = btn.dataset.ip || '';
+      if (ip) location.href = `/nodes?server_ip=${encodeURIComponent(ip)}`;
+      return;
+    }
+    const id = parseInt(btn.dataset.id, 10);
+    if (btn.dataset.action === 'delete') {
+      if (!confirm('确定删除这台服务器？')) return;
+      const res = await api.del(`/api/servers/${id}`);
+      if (!res.ok) return toast(res.error || '删除失败', 'error');
+      selected.delete(String(id));
+      toast('已删除', 'success');
+      await loadServers();
+    } else if (btn.dataset.action === 'install') {
+      await runServerAction('/api/servers/install', [id], '安装任务已执行', {
+        id,
+        selector: 'button[data-action="install"]',
+        loadingText: '安装中...',
+        startText: '已开始安装，这个过程可能需要几分钟',
+        markInstalling: true,
+      });
+    } else if (btn.dataset.action === 'test') {
+      await runAction('/api/servers/test', [id], '连接测试完成');
+    } else if (btn.dataset.action === 'edit') {
+      openEditServer(id);
+    }
+  });
+
+  document.getElementById('btnInstallSelected').addEventListener('click', () => {
+    if (!confirm('确定对选中的服务器执行一键安装 42 轻量？')) return;
+    runServerAction('/api/servers/install', selectedIds(), '安装任务已执行', {
+      selector: '#btnInstallSelected',
+      loadingText: '安装中...',
+      startText: '已开始批量安装，这个过程可能需要几分钟',
+      markInstalling: true,
+    });
+  });
+  document.getElementById('btnTestSelected').addEventListener('click', () => runAction('/api/servers/test', selectedIds(), '连接测试完成'));
+  document.getElementById('btnDeleteSelected').addEventListener('click', async () => {
+    const ids = selectedIds();
+    if (!ids.length) return toast('请选择服务器', 'error');
+    if (!confirm(`确定批量删除 ${ids.length} 台服务器？`)) return;
+    const res = await api.post('/api/servers/batch-delete', { ids });
+    if (!res.ok) return toast(res.error || '批量删除失败', 'error');
+    ids.forEach(id => selected.delete(String(id)));
+    toast(`已删除 ${res.deleted || 0} 台`, 'success');
+    await loadServers();
+  });
+  document.getElementById('btnGroupSelected').addEventListener('click', () => {
+    const ids = selectedIds();
+    if (!ids.length) return toast('请选择服务器', 'error');
+    document.getElementById('serverGroupHint').textContent = `已选择 ${ids.length} 台服务器`;
+    document.getElementById('batchServerGroup').value = '';
+    new bootstrap.Modal(document.getElementById('serverGroupModal')).show();
+  });
+  document.getElementById('btnConfirmServerGroup').addEventListener('click', async () => {
+    const ids = selectedIds();
+    const res = await api.post('/api/servers/batch-group', { ids, group_name: document.getElementById('batchServerGroup').value });
+    if (!res.ok) return toast(res.error || '分组失败', 'error');
+    bootstrap.Modal.getInstance(document.getElementById('serverGroupModal'))?.hide();
+    toast(`已更新 ${res.updated || 0} 台`, 'success');
+    await loadServers();
+  });
+  document.getElementById('btnSaveServerEdit').addEventListener('click', saveServerEdit);
+  document.getElementById('btnRefreshServers').addEventListener('click', loadServers);
+  els.search.addEventListener('input', () => { currentPage = 1; render(); });
+  els.groupFilter.addEventListener('change', () => { currentPage = 1; render(); });
+  els.pageSize.addEventListener('change', () => { currentPage = 1; render(); });
+  document.getElementById('btnFirstPage').addEventListener('click', () => { currentPage = 1; render(); });
+  document.getElementById('btnPrevPage').addEventListener('click', () => { currentPage -= 1; render(); });
+  document.getElementById('btnNextPage').addEventListener('click', () => { currentPage += 1; render(); });
+  document.getElementById('btnLastPage').addEventListener('click', () => { currentPage = 999999; render(); });
+
+  loadServers();
+});
+</script>
+{% endblock %}
+
+
+

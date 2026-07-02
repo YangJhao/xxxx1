@@ -29,28 +29,99 @@
 {% block scripts %}
 <script>
 let trafficChart;
+let latestOverview = null;
+let chartLoading = false;
+const ECHARTS_URL = "{{ url_for('static', filename='vendor/echarts/echarts.min.js') }}";
 
-async function loadOverview() {
-  const r = await api.get('/api/stats/overview');
-  if (!r.ok) return;
-  const d = r.data || {};
+const $id = id => document.getElementById(id);
+const setText = (id, value) => {
+  const el = $id(id);
+  if (el) el.textContent = value;
+};
 
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      existing.addEventListener('load', resolve, { once: true });
+      existing.addEventListener('error', reject, { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+
+async function ensureChart() {
+  if (trafficChart || chartLoading) return;
+  chartLoading = true;
+  try {
+    if (!window.echarts) await loadScript(ECHARTS_URL);
+    const box = $id('chartTraffic');
+    if (!box || !window.echarts) return;
+    box.textContent = '';
+    trafficChart = echarts.init(box);
+    window.addEventListener('resize', () => trafficChart.resize());
+    if (latestOverview) renderTrafficChart(latestOverview);
+  } catch (e) {
+    const box = $id('chartTraffic');
+    if (box) box.textContent = '图表组件未加载，基础监控数据仍可正常显示';
+  } finally {
+    chartLoading = false;
+  }
+}
+
+function renderTrafficChart(d) {
+  if (!trafficChart) return;
   const hours = (d.trend_hours || []).map(h => h.slice(11) + ':00');
   const delta = arr => (arr || []).map((v, i, a) => i === 0 ? 0 : Math.max(0, (v || 0) - (a[i - 1] || 0)));
   const trendIn = delta(d.trend_in);
   const trendOut = delta(d.trend_out);
   trafficChart.setOption({
     tooltip: { trigger: 'axis' },
-    legend: { data: ['入站', '出站'], textStyle: { color: '#8b949e' } },
+    legend: { data: ['Inbound', 'Outbound'], textStyle: { color: '#8b949e' } },
     xAxis: { type: 'category', data: hours, axisLabel: { color: '#8b949e' } },
-    yAxis: { type: 'value', axisLabel: { color: '#8b949e', formatter: v => formatBytes(v) } },
+    yAxis: {
+      type: 'value',
+      min: 0,
+      splitNumber: 4,
+      axisLabel: {
+        color: '#8b949e',
+        formatter: v => Number.isFinite(Number(v)) ? formatBytes(Number(v) || 0) : ''
+      }
+    },
     series: [
-      { name: '入站', type: 'line', smooth: true, data: trendIn, itemStyle: { color: '#4ea1ff' }, areaStyle: { opacity: 0.16 } },
-      { name: '出站', type: 'line', smooth: true, data: trendOut, itemStyle: { color: '#22c979' }, areaStyle: { opacity: 0.14 } },
+      { name: 'Inbound', type: 'line', smooth: true, data: trendIn, itemStyle: { color: '#4ea1ff' }, areaStyle: { opacity: 0.16 } },
+      { name: 'Outbound', type: 'line', smooth: true, data: trendOut, itemStyle: { color: '#22c979' }, areaStyle: { opacity: 0.14 } },
     ],
     grid: { left: 70, right: 20, top: 40, bottom: 40 }
   });
+}
 
+function scheduleChartLoad() {
+  const start = () => setTimeout(ensureChart, 1200);
+  if (document.readyState === 'complete') {
+    start();
+    return;
+  }
+  window.addEventListener('load', start, { once: true });
+}
+
+async function loadOverview() {
+  const r = await api.get('/api/stats/overview');
+  if (!r.ok) return;
+  const d = r.data || {};
+  latestOverview = d;
+  if (!trafficChart) {
+    const box = $id('chartTraffic');
+    if (box && !chartLoading) box.textContent = '图表加载中...';
+    return;
+  }
+  renderTrafficChart(d);
 }
 
 async function loadProbe() {
@@ -59,21 +130,20 @@ async function loadProbe() {
   const d = r.data || {};
   const diskText = disk => disk ? `${disk.percent}% / ${formatBytes(disk.used)} / ${formatBytes(disk.total)}` : '-';
   const disks = [];
-  if (d.disk_system) disks.push(`系统 ${diskText(d.disk_system)}`);
-  if (d.disk_project && (!d.disk_system || d.disk_project.path !== d.disk_system.path)) disks.push(`项目 ${diskText(d.disk_project)}`);
-  $('#probeCpu').text(`${d.cpu_percent}%`);
-  $('#probeMemory').text(`${formatBytes(d.memory_used)} / ${formatBytes(d.memory_total)} (${d.memory_percent}%)`);
-  $('#probeConnections').text(d.connections);
-  $('#probeBandwidth').text(`下 ${formatBytes(d.net_rx_bps)}/s 上 ${formatBytes(d.net_tx_bps)}/s`);
-  $('#probeTraffic').text(`下 ${formatBytes(d.net_bytes_recv)} 上 ${formatBytes(d.net_bytes_sent)}`);
-  $('#probeDisk').text(disks.join(' | ') || `${d.disk_percent}% / ${formatBytes(d.disk_used)} / ${formatBytes(d.disk_total)}`);
-  $('#probeTime').text(d.time || '');
+  if (d.disk_system) disks.push(`System ${diskText(d.disk_system)}`);
+  if (d.disk_project && (!d.disk_system || d.disk_project.path !== d.disk_system.path)) disks.push(`Project ${diskText(d.disk_project)}`);
+  setText('probeCpu', `${d.cpu_percent}%`);
+  setText('probeMemory', `${formatBytes(d.memory_used)} / ${formatBytes(d.memory_total)} (${d.memory_percent}%)`);
+  setText('probeConnections', d.connections);
+  setText('probeBandwidth', `Down ${formatBytes(d.net_rx_bps)}/s Up ${formatBytes(d.net_tx_bps)}/s`);
+  setText('probeTraffic', `Recv ${formatBytes(d.net_bytes_recv)} Sent ${formatBytes(d.net_bytes_sent)}`);
+  setText('probeDisk', disks.join(' | ') || `${d.disk_percent}% / ${formatBytes(d.disk_used)} / ${formatBytes(d.disk_total)}`);
+  setText('probeTime', d.time || '');
 }
 
-$(async () => {
-  trafficChart = echarts.init(document.getElementById('chartTraffic'));
-  window.addEventListener('resize', () => trafficChart.resize());
+document.addEventListener('DOMContentLoaded', async () => {
   await Promise.all([loadOverview(), loadProbe()]);
+  scheduleChartLoad();
   setInterval(loadOverview, 30000);
   setInterval(loadProbe, 5000);
 });

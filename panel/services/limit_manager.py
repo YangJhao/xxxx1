@@ -80,6 +80,33 @@ def _run_linux_limit_script(script: str) -> tuple[bool, str]:
     return _run_cmd(["sh", "-c", script], timeout=25)
 
 
+def _wireguard_client_ip(user) -> str | None:
+    note = getattr(user, "note", "") or ""
+    match = re.search(r"^wg_ip=([0-9.]+)(?:/\d+)?\s*$", note, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _linux_wireguard_limit(user, bps: int) -> dict:
+    peer_ip = _wireguard_client_ip(user)
+    if not peer_ip:
+        return {"ok": False, "limited": False, "bps": bps, "output": "WireGuard client IP not found in node note"}
+
+    iface = os.environ.get("IPWIN42_WG_IFACE", "wg42").strip() or "wg42"
+    rate = f"{max(1, int(bps / 1000))}kbit"
+    classid = f"1:{1000 + int(user.id)}"
+    prio = 2000 + int(user.id)
+    script = "\n".join([
+        f"ip link show dev {iface} >/dev/null 2>&1",
+        f"tc qdisc add dev {iface} root handle 1: htb default 999 2>/dev/null || true",
+        f"tc class add dev {iface} parent 1: classid 1:1 htb rate 1000mbit ceil 1000mbit 2>/dev/null || true",
+        f"tc class replace dev {iface} parent 1:1 classid {classid} htb rate {rate} ceil {rate}",
+        f"tc filter del dev {iface} protocol ip parent 1: prio {prio} 2>/dev/null || true",
+        f"tc filter add dev {iface} protocol ip parent 1: prio {prio} u32 match ip dst {peer_ip}/32 flowid {classid}",
+    ])
+    ok, output = _run_linux_limit_script(script)
+    return {"ok": ok, "limited": ok, "bps": bps, "output": output, "interface": iface, "wireguard_ip": peer_ip}
+
+
 def clear_limit(user_id: int) -> dict:
     if os.name != "nt":
         if not _tc_available():
@@ -102,8 +129,7 @@ def clear_limit(user_id: int) -> dict:
     return {"ok": ok, "output": output}
 
 
-def apply_limit(user, port: int, protocol: str | None = None) -> dict:
-    bps = parse_speed_to_bps(getattr(user, "speed_limit", None))
+def apply_limit_bps(user, port: int, protocol: str | None, bps: int | None) -> dict:
     clear = clear_limit(user.id)
     if not bps:
         return {"ok": clear["ok"], "limited": False, "bps": None, "output": clear.get("output", "")}
@@ -111,10 +137,12 @@ def apply_limit(user, port: int, protocol: str | None = None) -> dict:
     if os.name != "nt":
         if not _tc_available():
             return {"ok": False, "limited": False, "bps": bps, "output": "Linux tc/ip 命令不可用，请安装 iproute2/iptables"}
+        proto = (protocol or getattr(user, "protocol", "") or "").lower()
+        if proto == "wireguard":
+            return _linux_wireguard_limit(user, bps)
         iface = _linux_default_iface()
         if not iface:
             return {"ok": False, "limited": False, "bps": bps, "output": "未找到默认出口网卡"}
-        proto = (protocol or getattr(user, "protocol", "") or "").lower()
         use_udp = proto in {"socks5", "ss", "hysteria2"}
         port = int(port)
         mark = _linux_mark(user.id)
@@ -148,6 +176,11 @@ def apply_limit(user, port: int, protocol: str | None = None) -> dict:
         )
     ok, output = _run_ps("\n".join(parts))
     return {"ok": ok, "limited": ok, "bps": bps, "output": output}
+
+
+def apply_limit(user, port: int, protocol: str | None = None) -> dict:
+    bps = parse_speed_to_bps(getattr(user, "speed_limit", None))
+    return apply_limit_bps(user, port, protocol, bps)
 
 
 def sync_limits(session) -> list[dict]:

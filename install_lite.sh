@@ -32,7 +32,8 @@ install_packages() {
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     python3 python3-flask python3-sqlalchemy python3-psutil python3-requests \
-    curl iproute2 iptables procps rsync ca-certificates
+    python3-paramiko \
+    curl iproute2 iptables procps rsync ca-certificates openssl wireguard-tools
 }
 
 copy_project() {
@@ -43,7 +44,7 @@ copy_project() {
   fi
   rsync -a --delete \
     --exclude ".git" \
-    --exclude "data/backups" \
+    --exclude "data" \
     --exclude "__pycache__" \
     ./ "$APP_DIR/"
 }
@@ -106,10 +107,12 @@ User=${SERVICE_USER}
 Environment=IPWIN42_LITE=1
 Environment=IPWIN42_NO_COLLECTOR=1
 Environment=IPWIN42_SINGBOX_WATCHDOG=1
+Environment=IPWIN42_PANEL_PORT=${PANEL_PORT}
 WorkingDirectory=${APP_DIR}
 ExecStart=/usr/bin/${PYTHON_BIN} ${APP_DIR}/panel/app.py --no-browser --lite --singbox-watchdog
 Restart=always
 RestartSec=5
+KillMode=process
 OOMScoreAdjust=500
 
 [Install]

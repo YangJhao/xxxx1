@@ -160,6 +160,13 @@ window.copyText = async function (text) {
 };
 
 document.addEventListener('DOMContentLoaded', () => {
+  if (document.fonts && document.fonts.check) {
+    document.fonts.ready.then(() => {
+      if (!document.fonts.check('1em bootstrap-icons') && !document.fonts.check('1em "bootstrap-icons"')) {
+        document.body.classList.add('icons-fallback');
+      }
+    }).catch(() => {});
+  }
   const current = location.pathname;
   document.querySelectorAll('.sidebar .nav-link').forEach(link => {
     const href = link.getAttribute('href');

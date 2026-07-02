@@ -3,6 +3,7 @@ from functools import wraps
 
 from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
 
+from config import is_lite_mode
 from models import AdminUser, NodeCustomer, OperationLog, Plan, Project, ProxyUser, get_session
 
 bp = Blueprint("auth", __name__)
@@ -11,6 +12,7 @@ PERMISSION_ITEMS = [
     {"key": "dashboard", "label": "仪表盘", "path": "/dashboard"},
     {"key": "lines", "label": "线路管理", "path": "/lines"},
     {"key": "nodes", "label": "节点列表", "path": "/nodes"},
+    {"key": "group_control", "label": "服务器管理", "path": "/group-control"},
     {"key": "customers", "label": "客户管理", "path": "/customers"},
     {"key": "pve", "label": "HV虚拟机", "path": "/hyperv"},
     {"key": "logs", "label": "操作日志", "path": "/operation-logs"},
@@ -42,8 +44,12 @@ def current_permissions() -> set[str]:
         return set()
     permissions = getattr(admin, "permissions", None)
     if admin.is_super or permissions is None:
-        return set(ALL_PERMISSION_KEYS)
-    return set(_split_permissions(permissions))
+        keys = set(ALL_PERMISSION_KEYS)
+    else:
+        keys = set(_split_permissions(permissions))
+    if is_lite_mode():
+        keys -= {"lines", "customers", "pve"}
+    return keys
 
 
 def has_permission(key: str) -> bool:
@@ -149,6 +155,13 @@ def write_operation(operator: str, module: str, action: str, detail: str = "", i
         s.close()
 
 
+def current_operator_name() -> str:
+    name = (session.get("admin_name") or "").strip()
+    if name:
+        return name
+    return "admin"
+
+
 @bp.route("/api/admin-users", methods=["GET"])
 @login_required
 def admin_users():
@@ -156,6 +169,27 @@ def admin_users():
     try:
         rows = s.query(AdminUser).order_by(AdminUser.id.desc()).all()
         return jsonify({"ok": True, "data": [u.to_dict() for u in rows], "permissions": PERMISSION_ITEMS})
+    finally:
+        s.close()
+
+
+@bp.route("/api/operator-options", methods=["GET"])
+@login_required
+def operator_options():
+    s = get_session()
+    try:
+        names = []
+        seen = set()
+        for user in s.query(AdminUser).filter_by(status=1).order_by(AdminUser.id.asc()).all():
+            for value in (user.display_name, user.username):
+                name = (value or "").strip()
+                if name and name not in seen:
+                    seen.add(name)
+                    names.append(name)
+        current = current_operator_name()
+        if current and current not in seen:
+            names.insert(0, current)
+        return jsonify({"ok": True, "data": names, "current": current})
     finally:
         s.close()
 

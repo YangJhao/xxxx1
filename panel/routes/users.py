@@ -1,4 +1,5 @@
 """Proxy user management APIs."""
+import os
 import re
 import secrets
 import socket
@@ -7,19 +8,31 @@ import string
 import threading
 import time
 import uuid
+import io
+import zipfile
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+import urllib.request
+import urllib.error
+import urllib.parse
+import http.cookiejar
 
 import psutil
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request, session
 from sqlalchemy.orm import joinedload
 
-from models import Line, PROTOCOL_TYPES, ProxyUser, SS_METHODS, get_session
+from config import is_lite_mode
+from models import Line, ManagedServer, PROTOCOL_TYPES, ProxyUser, SS_METHODS, get_session
 from routes.auth import login_required
+from services.audit_logger import add_operation_log
 from services import proxy_manager
+from services.proxy_manager import _pop_auto_restore_marker
 from services.cfg_generator import parse_size_to_bytes, write_cfg
 from services.fast_speed import fast_socks5_speed
 from services.limit_manager import apply_limit, clear_limit, parse_speed_to_bps, sync_limits
-from services.traffic_collector import collect_once, snapshot_connections
+from services.traffic_collector import collect_once, snapshot_connections_status
+from services import wireguard_manager
 
 bp = Blueprint("users", __name__, url_prefix="/api/users")
 _limit_worker_lock = threading.Lock()
@@ -27,9 +40,15 @@ _limit_worker_lock = threading.Lock()
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_\-]{3,48}$")
 TESTABLE_UDP_PROTOCOLS = {"socks5", "ss", "hysteria2"}
 RANDOM_PORT_MIN = 10000
-RANDOM_PORT_MAX = 59999
+RANDOM_PORT_MAX = 60000
 DEFAULT_SPEED_LIMIT = "20m"
 DEFAULT_TRAFFIC_LIMIT = "130g"
+DEFAULT_LITE_LINE_NAME = "本机公网"
+
+
+def current_operator_name() -> str:
+    name = (session.get("admin_name") or "").strip()
+    return name or "admin"
 
 
 def _gen_password(n: int = 12) -> str:
@@ -56,14 +75,296 @@ def _target_lines(session, line_id, count: int):
     return lines[:1]
 
 
-def _assignment_exists(session, line_id: int, owner_name: str, project_name: str) -> bool:
-    owner = (owner_name or "").strip()
+def _target_lines_by_ids(session, line_ids) -> list[Line]:
+    ids = []
+    for value in line_ids or []:
+        try:
+            item = int(value)
+        except Exception:
+            continue
+        if item not in ids:
+            ids.append(item)
+    if not ids:
+        return []
+    rows = session.query(Line).filter(Line.id.in_(ids)).order_by(Line.id).all()
+    by_id = {row.id: row for row in rows}
+    return [by_id[item] for item in ids if item in by_id]
+
+
+def _parse_int_ids(values) -> list[int]:
+    ids = []
+    for value in values or []:
+        try:
+            item = int(str(value).strip())
+        except Exception:
+            continue
+        if item > 0 and item not in ids:
+            ids.append(item)
+    return ids
+
+
+def _parse_remote_user_id(value: str) -> tuple[int, int] | None:
+    parts = str(value or "").split(":")
+    if len(parts) != 3 or parts[0] != "remote":
+        return None
+    try:
+        server_id = int(parts[1])
+        user_id = int(parts[2])
+    except Exception:
+        return None
+    if server_id <= 0 or user_id <= 0:
+        return None
+    return server_id, user_id
+
+
+def _remote_panel_post(server: ManagedServer, path: str, payload: dict, timeout: int = 45) -> dict:
+    base = f"http://{server.ip}:18080"
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+    def post_json(url: str, body: dict):
+        raw = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=raw,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                text = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            text = exc.read().decode("utf-8", "replace")
+            try:
+                body = json.loads(text)
+                message = body.get("error") or body.get("message") or text[:300]
+            except Exception:
+                plain = re.sub(r"<[^>]+>", " ", text or "")
+                plain = re.sub(r"\s+", " ", plain).strip()
+                if exc.code >= 500:
+                    message = "子机内部错误，请查看该服务器日志"
+                else:
+                    message = plain[:160] or exc.reason
+            raise RuntimeError(f"HTTP {exc.code}: {message}") from exc
+        try:
+            return json.loads(text)
+        except Exception as exc:
+            raise RuntimeError(f"返回不是 JSON: {text[:200]}") from exc
+
+    login = post_json(f"{base}/api/login", {"username": "admin", "password": "admin123"})
+    if not login.get("ok"):
+        raise RuntimeError(login.get("error") or "远程轻量面板登录失败")
+    result = post_json(f"{base}{path}", payload)
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error") or "远程创建失败")
+    return result
+
+
+def _remote_panel_get(server: ManagedServer, path: str, timeout: int = 6) -> dict:
+    base = f"http://{server.ip}:18080"
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+    def post_json(url: str, body: dict):
+        raw = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, data=raw, headers={"Content-Type": "application/json"}, method="POST")
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+
+    login = post_json(f"{base}/api/login", {"username": "admin", "password": "admin123"})
+    if not login.get("ok"):
+        raise RuntimeError(login.get("error") or "远程轻量面板登录失败")
+    req = urllib.request.Request(f"{base}{path}", method="GET")
+    with opener.open(req, timeout=timeout) as resp:
+        text = resp.read().decode("utf-8", "replace")
+    try:
+        return json.loads(text)
+    except Exception as exc:
+        raise RuntimeError(f"返回不是 JSON: {text[:200]}") from exc
+
+
+
+def _remote_panel_download(server: ManagedServer, path: str, timeout: int = 20) -> tuple[bytes, str]:
+    base = f"http://{server.ip}:18080"
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+    def post_json(url: str, body: dict):
+        raw = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(url, data=raw, headers={"Content-Type": "application/json"}, method="POST")
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", "replace"))
+
+    login = post_json(f"{base}/api/login", {"username": "admin", "password": "admin123"})
+    if not login.get("ok"):
+        raise RuntimeError(login.get("error") or "remote login failed")
+    req = urllib.request.Request(f"{base}{path}", method="GET")
+    with opener.open(req, timeout=timeout) as resp:
+        data = resp.read()
+        disposition = resp.headers.get("Content-Disposition") or ""
+    filename = ""
+    match = re.search(r'filename="?([^";]+)"?', disposition)
+    if match:
+        filename = match.group(1)
+    return data, filename
+
+
+def _remote_panel_delete(server: ManagedServer, path: str, timeout: int = 20) -> dict:
+    base = f"http://{server.ip}:18080"
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+    def request_json(url: str, method: str = "GET", body: dict | None = None):
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        headers = {"Content-Type": "application/json"} if body is not None else {}
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with opener.open(req, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", "replace")
+        return json.loads(text) if text else {}
+
+    login = request_json(f"{base}/api/login", "POST", {"username": "admin", "password": "admin123"})
+    if not login.get("ok"):
+        raise RuntimeError(login.get("error") or "remote login failed")
+    result = request_json(f"{base}{path}", "DELETE")
+    if result and not result.get("ok", True):
+        raise RuntimeError(result.get("error") or "remote delete failed")
+    return result or {"ok": True}
+
+
+def _local_server_ips() -> set[str]:
+    ips = {"127.0.0.1", "localhost"}
+    host_ip = (request.host or "").split(":", 1)[0].strip()
+    if host_ip:
+        ips.add(host_ip)
+    try:
+        hostname = socket.gethostname()
+        ips.add(socket.gethostbyname(hostname))
+        for item in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ips.add(item[4][0])
+    except Exception:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            ips.add(sock.getsockname()[0])
+    except Exception:
+        pass
+    for key in ("PUBLIC_IP", "IPWIN42_PUBLIC_IP", "SERVER_PUBLIC_IP"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            ips.add(value)
+    return ips
+
+
+def _remote_users_from_managed_servers(session) -> list[dict]:
+    local_ips = _local_server_ips()
+    servers = (
+        session.query(ManagedServer)
+        .filter(ManagedServer.install_status == "installed")
+        .order_by(ManagedServer.id.desc())
+        .all()
+    )
+    servers = [server for server in servers if server.ip not in local_ips]
+
+    def fetch_server(server: ManagedServer) -> list[dict]:
+        server_rows = []
+        try:
+            result = _remote_panel_get(server, "/api/users", timeout=6)
+            for item in result.get("data") or []:
+                item = dict(item)
+                item["local_id"] = item.get("id")
+                item["id"] = f"remote:{server.id}:{item.get('id')}"
+                item["managed_server_id"] = server.id
+                item["managed_server_ip"] = server.ip
+                item["line_ip"] = item.get("line_ip") or server.ip
+                item["line_name"] = item.get("line_name") or server.ip
+                item["note"] = item.get("note") or ""
+                item["traffic_available"] = item.get("traffic_available", False)
+                item["traffic_source"] = item.get("traffic_source") or "远程服务器实时统计"
+                server_rows.append(item)
+        except Exception:
+            return []
+        return server_rows
+
+    if not servers:
+        return []
+
+    rows = []
+    with ThreadPoolExecutor(max_workers=min(8, len(servers))) as executor:
+        futures = [executor.submit(fetch_server, server) for server in servers]
+        for future in as_completed(futures):
+            rows.extend(future.result())
+    return rows
+
+def _create_on_managed_servers(session, server_ids: list[int], data: dict, count: int) -> dict | None:
+    ids = _parse_int_ids(server_ids)
+    if not ids:
+        return None
+    rows = session.query(ManagedServer).filter(ManagedServer.id.in_(ids)).order_by(ManagedServer.id).all()
+    by_id = {row.id: row for row in rows}
+    servers = [by_id[item] for item in ids if item in by_id]
+    if not servers:
+        raise ValueError("请选择有效服务器")
+
+    targets = []
+    while len(targets) < count:
+        targets.extend(servers)
+    targets = targets[:count]
+
+    created = []
+    errors = []
+    skipped = []
+
+    def create_remote(index_server):
+        index, server = index_server
+        payload = dict(data)
+        payload.pop("server_ids", None)
+        payload["line_id"] = "lite"
+        payload["line_ids"] = []
+        payload["count"] = 1
+        try:
+            result = _remote_panel_post(server, "/api/users", payload)
+            result_data = result.get("data") or {}
+            rows = result_data.get("created") or ([result_data] if result_data.get("id") else [])
+            server_created = []
+            for item in rows:
+                item = dict(item)
+                item["local_id"] = item.get("id")
+                item["id"] = f"remote:{server.id}:{item.get('id')}"
+                item["managed_server_id"] = server.id
+                item["managed_server_ip"] = server.ip
+                server_created.append(item)
+            return server_created, None
+        except Exception as exc:
+            return [], f"{server.ip}: {exc}"
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(targets)))) as executor:
+        futures = [executor.submit(create_remote, pair) for pair in enumerate(targets, 1)]
+        for future in as_completed(futures):
+            server_created, error = future.result()
+            created.extend(server_created)
+            if error:
+                errors.append(error)
+
+    return {
+        "created": created,
+        "created_count": len(created),
+        "skipped": skipped,
+        "skipped_count": 0,
+        "errors": errors,
+        "limits": [],
+        "limit_queued": 0,
+        "apply_status": {
+            "applied": bool(created),
+            "restarted": False,
+            "message": f"已在服务器管理中创建 {len(created)} 个，失败 {len(errors)} 个",
+        },
+    }
+
+
+def _line_project_used(session, line_id: int, project_name: str) -> bool:
     project = (project_name or "").strip()
     q = session.query(ProxyUser).filter(ProxyUser.line_id == line_id)
-    if owner:
-        q = q.filter(ProxyUser.owner_name == owner)
-    else:
-        q = q.filter((ProxyUser.owner_name.is_(None)) | (ProxyUser.owner_name == ""))
     if project:
         q = q.filter(ProxyUser.project_name == project)
     else:
@@ -111,6 +412,67 @@ def _random_available_port(session, used_ports: set[int] | None = None) -> int:
     raise ValueError("没有可用端口")
 
 
+def _is_public_ip(ip: str) -> bool:
+    try:
+        import ipaddress
+        addr = ipaddress.ip_address(ip)
+        return not (addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_multicast or addr.is_unspecified)
+    except Exception:
+        return False
+
+
+def _detect_public_ip() -> str:
+    env_ip = (os.environ.get("IPWIN42_PUBLIC_IP") or os.environ.get("PUBLIC_IP") or "").strip()
+    if _is_public_ip(env_ip):
+        return env_ip
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                ip = resp.read(64).decode("utf-8", "replace").strip()
+                if _is_public_ip(ip):
+                    return ip
+        except Exception:
+            pass
+    try:
+        for rows in psutil.net_if_addrs().values():
+            for addr in rows:
+                if addr.family == socket.AF_INET and _is_public_ip(addr.address):
+                    return addr.address
+    except Exception:
+        pass
+    return ""
+
+
+def _ensure_lite_line(session) -> Line:
+    public_ip = _detect_public_ip()
+    if not public_ip:
+        raise ValueError("无法自动获取本机公网 IP，请设置环境变量 IPWIN42_PUBLIC_IP")
+    line = session.query(Line).filter(Line.public_ip == public_ip).first()
+    if line:
+        if line.status != 1:
+            line.status = 1
+        if not line.name:
+            line.name = DEFAULT_LITE_LINE_NAME
+        return line
+    used = _used_listen_ports(session)
+    socks_port = 10801
+    while socks_port in used:
+        socks_port += 1
+    line = Line(
+        name=DEFAULT_LITE_LINE_NAME,
+        public_ip=public_ip,
+        internal_ip="0.0.0.0",
+        socks_port=socks_port,
+        http_port=socks_port + 10,
+        ss_port=socks_port + 20,
+        status=1,
+        note="lite-auto",
+    )
+    session.add(line)
+    session.flush()
+    return line
+
+
 def _normalize_protocol(value: str) -> str:
     proto = (value or "socks5").strip().lower()
     aliases = {
@@ -123,6 +485,8 @@ def _normalize_protocol(value: str) -> str:
         "hysteria": "hysteria2",
         "hysteria-2": "hysteria2",
         "vm": "vless",
+        "wg": "wireguard",
+        "wireguard": "wireguard",
     }
     return aliases.get(proto, proto)
 
@@ -155,6 +519,35 @@ def _format_size_limit_text(total_bytes: int) -> str:
     return f"{total}b"
 
 
+def _hysteria2_name(line: Line, expire_at, index: int | None = None, total: int = 1) -> str:
+    expire_text = expire_at.date().isoformat() if expire_at else "long"
+    name = f"{line.public_ip}-{expire_text}"
+    if total > 1 and index is not None:
+        return f"{name}-{index:03d}"
+    return name
+
+
+def _safe_conf_name(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.\-\u4e00-\u9fff]+", "-", str(value or "")).strip("-")
+    return text or "wireguard"
+
+
+def _wireguard_conf_filename(user: ProxyUser) -> str:
+    ip = user.line.public_ip if user.line else ""
+    expire = user.expire_at.date().isoformat() if user.expire_at else ""
+    parts = [ip, user.project_name or "", user.owner_name or user.username or "", expire]
+    base = "-".join(_safe_conf_name(part) for part in parts if part)
+    return f"{base or f'wg-{user.id}'}.conf"
+
+
+def _download_disposition(filename: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(filename or "download.conf")).strip("-")
+    if not safe:
+        safe = "download.conf"
+    encoded = urllib.parse.quote(str(filename or safe), safe="")
+    return f"attachment; filename=\"{safe}\"; filename*=UTF-8''{encoded}"
+
+
 def _normalize_speed_limit(value: str | None, default: str | None = None) -> str:
     text = str(value or "").strip().lower().replace(" ", "")
     if not text:
@@ -175,7 +568,7 @@ def _normalize_traffic_limit(value: str | None, default: str | None = None) -> s
 
 def _reload_proxy(session=None):
     write_cfg(session)
-    proxy_manager.reload_config()
+    return proxy_manager.restart_config()
 
 
 def _apply_user_limit(user):
@@ -239,6 +632,20 @@ def _apply_traffic_limits(session):
         used = int(user.bytes_in or 0) + int(user.bytes_out or 0)
         if used >= limit:
             user.status = 0
+            host = user.line.public_ip if user.line else "-"
+            port = user.listen_port or (user.line.get_port_by_protocol(user.protocol) if user.line else "-")
+            add_operation_log(
+                session,
+                "system",
+                "自动保护",
+                "自动停用节点",
+                (
+                    f"自动停用原因=流量用完；节点={host}:{port}；协议={user.protocol or '-'}；"
+                    f"用户={user.owner_name or user.username or '-'}；项目={user.project_name or '-'}；"
+                    f"已用={used} bytes；上限={limit} bytes；流量套餐={user.traffic_limit or '-'}"
+                ),
+                str(host),
+            )
             disabled.append(user.username)
     if disabled:
         session.commit()
@@ -255,6 +662,20 @@ def _apply_expire_limits(session):
     )
     for user in users:
         user.status = 0
+        host = user.line.public_ip if user.line else "-"
+        port = user.listen_port or (user.line.get_port_by_protocol(user.protocol) if user.line else "-")
+        add_operation_log(
+            session,
+            "system",
+            "自动保护",
+            "自动停用节点",
+            (
+                f"自动停用原因=到期；节点={host}:{port}；协议={user.protocol or '-'}；"
+                f"用户={user.owner_name or user.username or '-'}；项目={user.project_name or '-'}；"
+                f"到期时间={user.expire_at.isoformat() if user.expire_at else '-'}"
+            ),
+            str(host),
+        )
         disabled.append(user.username)
     if disabled:
         session.commit()
@@ -290,6 +711,54 @@ def _is_port_listening(port: int, protocol: str | None = None) -> bool:
     return False
 
 
+def _is_tcp_listening_on(host: str, port: int) -> bool:
+    host = (host or "").strip()
+    try:
+        for conn in psutil.net_connections(kind="tcp"):
+            if conn.status != psutil.CONN_LISTEN or not conn.laddr:
+                continue
+            if int(conn.laddr.port) != int(port):
+                continue
+            listen_host = getattr(conn.laddr, "ip", "") or conn.laddr[0]
+            if not host or listen_host in {host, "0.0.0.0", "::"}:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _user_listen_target(user: ProxyUser) -> tuple[str, int, str]:
+    protocol = (user.protocol or "socks5").lower()
+    line = user.line
+    host = (line.public_ip if line else "") or ""
+    port = int(user.listen_port or (line.get_port_by_protocol(protocol) if line else 0) or 0)
+    return host, port, protocol
+
+
+def _ensure_user_runtime_applied(session, user: ProxyUser, expected_enabled: bool, apply_status: dict | None = None) -> dict:
+    host, port, protocol = _user_listen_target(user)
+    status = dict(apply_status or {})
+    if not port:
+        status.update({"applied": False, "message": "missing listen port"})
+        return status
+
+    is_listening = _is_tcp_listening_on(host, port)
+    if (expected_enabled and is_listening) or ((not expected_enabled) and not is_listening):
+        status.setdefault("applied", True)
+        status.setdefault("restarted", False)
+        status.setdefault("message", "runtime listener verified")
+        status["listen"] = f"{host}:{port}" if host else str(port)
+        return status
+
+    status.update({
+        "applied": False,
+        "restarted": False,
+        "listen": f"{host}:{port}" if host else str(port),
+        "message": "runtime listener state not changed by hot reload; sing-box was not restarted",
+    })
+    return status
+
+
 def _created_apply_status(users: list[ProxyUser]) -> dict:
     ports = sorted({int(u.listen_port or u.line.get_port_by_protocol(u.protocol)) for u in users if u.line})
     missing = []
@@ -301,7 +770,7 @@ def _created_apply_status(users: list[ProxyUser]) -> dict:
         "applied": not missing,
         "missing_ports": missing,
         "restarted": False,
-        "message": "" if not missing else f"端口 {', '.join(map(str, missing[:8]))} 尚未被 sing-box 监听，需要应用配置",
+        "message": "已自动应用，端口已监听" if not missing else f"端口 {', '.join(map(str, missing[:8]))} 尚未监听",
     }
 
 
@@ -309,19 +778,9 @@ def _ensure_created_applied(users: list[ProxyUser]) -> dict:
     status = _created_apply_status(users)
     if status["applied"]:
         return status
-    try:
-        proxy_manager.restart_config()
-        time.sleep(2)
-        status = _created_apply_status(users)
-        status["restarted"] = True
-        if status["applied"]:
-            status["message"] = "配置已自动应用"
-        else:
-            status["message"] = f"端口 {', '.join(map(str, status['missing_ports'][:8]))} 仍未监听，请检查 sing-box 日志"
-    except Exception as exc:
-        status["message"] = f"自动应用配置失败：{exc}"
+    status["restarted"] = True
+    status["message"] = f"端口 {', '.join(map(str, status['missing_ports'][:8]))} 重启后仍未监听"
     return status
-
 
 def _interface_for_line(line: Line) -> str | None:
     candidates = [line.note, line.name]
@@ -515,29 +974,42 @@ def _create_user_v3():
     password = (data.get("password") or "").strip()
     protocol = _normalize_protocol(data.get("protocol"))
     ss_method = (data.get("ss_method") or "aes-256-gcm").strip()
-    line_id = data.get("line_id") or data.get("ip") or data.get("ip_select") or "all"
+    line_id = data.get("line_id") or data.get("ip") or data.get("ip_select") or ("lite" if is_lite_mode() else "all")
+    line_ids = data.get("line_ids") or []
+    server_ids = data.get("server_ids") or []
     expire_at_str = data.get("expire_at") or ""
     speed_limit = _normalize_speed_limit(data.get("speed_limit"), DEFAULT_SPEED_LIMIT)
     traffic_limit = _normalize_traffic_limit(data.get("traffic_limit"), DEFAULT_TRAFFIC_LIMIT)
     owner_name = (data.get("owner_name") or data.get("owner") or "").strip()
+    operator = current_operator_name()
     project_name = (data.get("project_name") or data.get("project") or "").strip()
     custom_port = data.get("custom_port")
     count = min(max(int(data.get("count") or 1), 1), 500)
-    skip_existing = bool(data.get("skip_existing", True))
+    local_count = min(max(int(data.get("local_count") or 0), 0), count)
+    remote_count = min(max(int(data.get("remote_count") or 0), 0), count)
+    skip_existing = True
     note = data.get("note", "")
 
+    if protocol == "wireguard":
+        base_username = base_username if base_username != "user" else "wg"
     if protocol == "ss":
         base_username = "ss_user"
+    if protocol == "hysteria2":
+        base_username = "hy2"
     if protocol not in PROTOCOL_TYPES:
         return jsonify({"ok": False, "error": f"协议必须是 {', '.join(PROTOCOL_TYPES)}"}), 400
     if protocol == "ss" and ss_method not in SS_METHODS:
         return jsonify({"ok": False, "error": f"SS 加密方式必须是 {', '.join(SS_METHODS)}"}), 400
-    if not USERNAME_RE.match(base_username):
+    if protocol != "hysteria2" and not USERNAME_RE.match(base_username):
         return jsonify({"ok": False, "error": "用户名格式错误：3-48 位字母、数字、下划线或横线"}), 400
-    if not project_name:
+    if not project_name and not is_lite_mode():
         return jsonify({"ok": False, "error": "请选择项目"}), 400
+    if not project_name:
+        project_name = (data.get("project") or "default").strip() or "default"
 
-    if not password:
+    if protocol == "hysteria2":
+        password = _gen_password(16)
+    elif not password:
         password = str(uuid.uuid4()) if protocol == "vless" else _gen_password(12)
     elif protocol == "vless":
         try:
@@ -550,15 +1022,41 @@ def _create_user_v3():
     if expire_at_str and expire_at is None:
         return jsonify({"ok": False, "error": "到期时间格式错误"}), 400
 
+    if protocol == "wireguard" and not wireguard_manager.available():
+        return jsonify({"ok": False, "error": "WireGuard tools not installed: install wireguard-tools first"}), 400
+
     s = get_session()
     try:
-        lines = _target_lines(s, line_id, count)
+        remote_result = _create_on_managed_servers(s, server_ids, data, remote_count or count)
+        remote_created = remote_result.get("created", []) if remote_result else []
+        if remote_result is not None and not (str(line_id).lower() == "lite" and local_count):
+            if not remote_result.get("created"):
+                detail = "；".join((remote_result.get("errors") or [])[:3]) or "远程服务器没有创建成功"
+                return jsonify({"ok": False, "error": f"未创建任何节点：{detail}", "data": remote_result}), 400
+            return jsonify({"ok": True, "data": remote_result})
+
+        line_key = str(line_id).lower()
+        lite_create = False
+        if line_ids:
+            selected_lines = _target_lines_by_ids(s, line_ids)
+            lines = []
+            while len(lines) < count and selected_lines:
+                lines.extend(selected_lines)
+            lines = lines[:count]
+        elif line_key == "all":
+            lines = _target_lines(s, line_id, count)
+        elif is_lite_mode() or line_key == "lite":
+            lite_create = True
+            lite_line = _ensure_lite_line(s)
+            lines = [lite_line for _ in range(local_count or count)]
+        else:
+            lines = _target_lines(s, line_id, count)
         if not lines:
             return jsonify({"ok": False, "error": "线路不存在"}), 400
 
         forced_port = None
         used_ports = _used_listen_ports(s)
-        if custom_port not in (None, "", 0, "0"):
+        if protocol != "hysteria2" and custom_port not in (None, "", 0, "0"):
             forced_port = int(custom_port)
             if not (1024 < forced_port < 65536):
                 return jsonify({"ok": False, "error": "端口范围错误"}), 400
@@ -573,22 +1071,25 @@ def _create_user_v3():
                     .first()
                 )
                 if exists:
-                    return jsonify({"ok": False, "error": "该线路端口已被占用"}), 400
+                    if remote_created:
+                        forced_port = None
+                    else:
+                        return jsonify({"ok": False, "error": "该线路端口已被占用"}), 400
 
         created = []
         skipped = []
         errors = []
+        assignment_owner = _assignment_label(owner_name, base_username)
         for line in lines:
             if len(created) >= count:
                 break
-            assignment_owner = _assignment_label(owner_name, base_username)
-            if _assignment_exists(s, line.id, assignment_owner, project_name):
-                msg = f"{line.name} / {line.public_ip}: 用户 {assignment_owner or '-'} + 项目 {project_name or '-'} 已创建，已跳过"
-                if skip_existing:
-                    skipped.append(msg)
-                    continue
-                return jsonify({"ok": False, "error": msg}), 400
-            username = base_username
+            if not lite_create and _line_project_used(s, line.id, project_name):
+                skipped.append(f"{line.name} / {line.public_ip}: 项目 {project_name or '-'} 已占用该节点，已跳过")
+                continue
+            if protocol == "hysteria2":
+                username = _hysteria2_name(line, expire_at, len(created) + 1, count)
+            else:
+                username = base_username if len(lines) == 1 else f"{base_username}{len(created) + 1:03d}"
 
             if forced_port:
                 exists = (
@@ -607,6 +1108,8 @@ def _create_user_v3():
             else:
                 listen_port = _random_available_port(s, used_ports)
             user_password = str(uuid.uuid4()) if protocol == "vless" and not data.get("password") else password
+            if protocol == "wireguard":
+                user_password = "pending-wireguard-key"
             user = ProxyUser(
                 username=username,
                 password=user_password,
@@ -615,6 +1118,7 @@ def _create_user_v3():
                 protocol=protocol,
                 listen_port=listen_port,
                 ss_method=ss_method if protocol == "ss" else None,
+                operator=operator,
                 owner_name=assignment_owner or None,
                 project_name=project_name or None,
                 speed_limit=speed_limit or None,
@@ -623,31 +1127,68 @@ def _create_user_v3():
                 note=note,
             )
             s.add(user)
+            if protocol == "wireguard":
+                s.flush()
+                wireguard_manager.create_client_material(s, user, line.public_ip)
             created.append(user)
 
-        if len(created) < count:
-            errors.append(f"节点不足：需要 {count} 个，实际创建 {len(created)} 个，缺少 {count - len(created)} 个")
+        local_target_count = len(lines)
+        if len(created) < local_target_count:
+            errors.append(f"节点不足：需要 {local_target_count} 个，实际创建 {len(created)} 个，缺少 {local_target_count - len(created)} 个")
 
-        if not created:
+        if not created and not remote_created:
             details = errors or skipped
             detail = "；".join(details[:3]) if details else "没有可用线路"
+            if skipped and not errors and skip_existing:
+                return jsonify({"ok": True, "data": {
+                    "created": [],
+                    "created_count": 0,
+                    "skipped": skipped,
+                    "skipped_count": len(skipped),
+                    "errors": [],
+                    "limits": [],
+                    "limit_queued": 0,
+                    "apply_status": {"applied": True, "missing_ports": [], "restarted": False, "message": "all matched nodes already exist; skipped"},
+                }})
             return jsonify({"ok": False, "error": f"未创建任何节点：{detail}"}), 400
 
         s.commit()
         for user in created:
             s.refresh(user)
-        _reload_proxy(s)
+        try:
+            if protocol == "wireguard":
+                apply_status = wireguard_manager.reload_service(s)
+            else:
+                _reload_proxy(s)
+                apply_status = _ensure_created_applied(created)
+        except Exception as exc:
+            created_ids = [user.id for user in created]
+            for user in created:
+                s.delete(user)
+            s.commit()
+            if protocol == "wireguard":
+                try:
+                    wireguard_manager.reload_service(s)
+                except Exception:
+                    pass
+            else:
+                try:
+                    _reload_proxy(s)
+                except Exception:
+                    pass
+            detail = str(exc)
+            return jsonify({"ok": False, "error": f"自动应用配置失败，已回滚本次创建：{detail}", "data": {"rolled_back_ids": created_ids}}), 400
         limited_ids = [u.id for u in created if parse_speed_to_bps(u.speed_limit)]
         _apply_user_limits_background(limited_ids)
         result = {
-            "created": [u.to_dict() for u in created],
-            "created_count": len(created),
+            "created": remote_created + [u.to_dict() for u in created],
+            "created_count": len(remote_created) + len(created),
             "skipped": skipped,
             "skipped_count": len(skipped),
-            "errors": errors,
+            "errors": (remote_result.get("errors", []) if remote_result else []) + errors,
             "limits": [{"ok": True, "queued": True, "user_id": uid} for uid in limited_ids],
             "limit_queued": len(limited_ids),
-            "apply_status": _ensure_created_applied(created),
+            "apply_status": apply_status,
         }
         if len(created) == 1:
             result.update(created[0].to_dict())
@@ -685,7 +1226,13 @@ def _limit_info_for_user(user: ProxyUser, measured_mbps=None) -> dict:
 def list_users():
     s = get_session()
     try:
-        connection_snapshot = snapshot_connections()
+        try:
+            collect_once()
+        except Exception:
+            pass
+        connection_status = snapshot_connections_status()
+        connection_snapshot = connection_status.get("data") or {}
+        wg_totals = wireguard_manager.transfer_snapshot(s)
         expired = _apply_expire_limits(s)
         traffic_disabled = _apply_traffic_limits(s)
         if expired or traffic_disabled:
@@ -702,9 +1249,21 @@ def list_users():
             item["connections"] = int(live.get("connections") or 0)
             item["live_upload"] = int(live.get("upload") or 0)
             item["live_download"] = int(live.get("download") or 0)
-            item["traffic_available"] = True
-            item["traffic_source"] = "sing-box 实时连接统计"
+            item["traffic_available"] = bool(connection_status.get("ok"))
+            if connection_status.get("ok"):
+                item["traffic_source"] = "sing-box 实时连接统计"
+            else:
+                item["traffic_source"] = f"sing-box 连接读取失败，已清零: {connection_status.get('error') or 'unknown'}"
+            if (user.protocol or "").lower() == "wireguard" and user.id in wg_totals:
+                wg_rx, wg_tx = wg_totals.get(user.id) or (0, 0)
+                item["bytes_in"] = max(int(item.get("bytes_in") or 0), int(wg_tx or 0))
+                item["bytes_out"] = max(int(item.get("bytes_out") or 0), int(wg_rx or 0))
+                item["connections"] = 1 if int(wg_rx or 0) or int(wg_tx or 0) else 0
+                item["traffic_available"] = True
+                item["traffic_source"] = "WireGuard 实时统计"
             rows.append(item)
+        if is_lite_mode():
+            rows.extend(_remote_users_from_managed_servers(s))
         return jsonify({"ok": True, "data": rows})
     finally:
         s.close()
@@ -754,21 +1313,56 @@ def clean_expired():
 @bp.route("/batch-delete", methods=["POST"])
 @login_required
 def batch_delete():
-    ids = (request.get_json(silent=True) or {}).get("ids") or []
-    ids = [int(x) for x in ids if str(x).isdigit()]
-    if not ids:
-        return jsonify({"ok": False, "error": "请选择要删除的用户"}), 400
+    raw_ids = (request.get_json(silent=True) or {}).get("ids") or []
+    ids = []
+    remote_ids = []
+    for value in raw_ids:
+        remote_id = _parse_remote_user_id(value)
+        if remote_id and remote_id not in remote_ids:
+            remote_ids.append(remote_id)
+            continue
+        if str(value).isdigit():
+            uid = int(value)
+            if uid not in ids:
+                ids.append(uid)
+    if not ids and not remote_ids:
+        return jsonify({"ok": False, "error": "请选择要删除的节点"}), 400
     s = get_session()
     try:
-        users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all()
+        users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all() if ids else []
         count = len(users)
         limit_ids = [user.id for user in users]
         for user in users:
             s.delete(user)
         s.commit()
-        _reload_proxy(s)
-        _clear_user_limits_background(limit_ids)
-        return jsonify({"ok": True, "data": {"deleted": count, "limit_clear_queued": len(limit_ids)}})
+        if users:
+            _reload_proxy(s)
+            _clear_user_limits_background(limit_ids)
+
+        errors = []
+        if remote_ids:
+            server_ids = sorted({server_id for server_id, _ in remote_ids})
+            servers = {server.id: server for server in s.query(ManagedServer).filter(ManagedServer.id.in_(server_ids)).all()}
+            def delete_remote(remote_pair):
+                server_id, user_id = remote_pair
+                server = servers.get(server_id)
+                if not server:
+                    return False, f"server {server_id} not found"
+                try:
+                    _remote_panel_delete(server, f"/api/users/{user_id}")
+                    return True, ""
+                except Exception as exc:
+                    return False, f"{server.ip}:{user_id} {exc}"
+
+            with ThreadPoolExecutor(max_workers=min(10, len(remote_ids))) as executor:
+                futures = [executor.submit(delete_remote, item) for item in remote_ids]
+                for future in as_completed(futures):
+                    ok, error = future.result()
+                    if ok:
+                        count += 1
+                    elif error:
+                        errors.append(error)
+        return jsonify({"ok": True, "data": {"deleted": count, "errors": errors, "limit_clear_queued": len(limit_ids)}})
     finally:
         s.close()
 
@@ -812,6 +1406,27 @@ def batch_assign_user():
         users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all()
         for user in users:
             user.owner_name = owner_name
+        s.commit()
+        return jsonify({"ok": True, "data": {"updated": len(users)}})
+    finally:
+        s.close()
+
+
+@bp.route("/batch-assign-operator", methods=["POST"])
+@login_required
+def batch_assign_operator():
+    data = request.get_json(silent=True) or {}
+    ids = [int(x) for x in (data.get("ids") or []) if str(x).isdigit()]
+    operator = (data.get("operator") or data.get("operator_name") or "").strip()
+    if not ids:
+        return jsonify({"ok": False, "error": "请选择节点"}), 400
+    if not operator:
+        return jsonify({"ok": False, "error": "操作人必填"}), 400
+    s = get_session()
+    try:
+        users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all()
+        for user in users:
+            user.operator = operator
         s.commit()
         return jsonify({"ok": True, "data": {"updated": len(users)}})
     finally:
@@ -1033,6 +1648,7 @@ def update_user(uid):
         user.listen_port = listen_port
         user.username = username
         user.password = password
+        user.operator = (data.get("operator") or user.operator or current_operator_name()).strip()
         user.owner_name = (data.get("owner_name") or "").strip()
         user.project_name = (data.get("project_name") or "").strip()
         user.speed_limit = _normalize_speed_limit(data.get("speed_limit"), DEFAULT_SPEED_LIMIT)
@@ -1061,13 +1677,21 @@ def toggle_user(uid):
         if not user:
             return jsonify({"ok": False, "error": "用户不存在"}), 404
         user.status = 0 if user.status else 1
+        if user.status:
+            _, user.note = _pop_auto_restore_marker(user.note)
+        if user.status and (user.note or "").startswith("自动停用：连接数"):
+            lines = [line for line in (user.note or "").splitlines() if not line.startswith("自动停用：连接数")]
+            user.note = "\n".join(lines).strip()
         s.commit()
         if user.status:
             _apply_user_limits_background([user.id])
         else:
             _clear_user_limits_background([user.id])
-        _reload_proxy(s)
-        return jsonify({"ok": True, "data": user.to_dict()})
+        apply_status = _reload_proxy(s)
+        apply_status = _ensure_user_runtime_applied(s, user, bool(user.status), apply_status)
+        data = user.to_dict()
+        data["apply_status"] = apply_status
+        return jsonify({"ok": True, "data": data})
     finally:
         s.close()
 
@@ -1099,6 +1723,126 @@ def connection_info(uid):
         if not user.status:
             return jsonify({"ok": False, "error": "节点已停用"}), 410
         return jsonify({"ok": True, "data": user.get_connection_info()})
+    finally:
+        s.close()
+
+
+@bp.route("/<int:uid>/wireguard.conf", methods=["GET"])
+@login_required
+def wireguard_conf(uid):
+    s = get_session()
+    try:
+        user = s.query(ProxyUser).get(uid)
+        if not user:
+            return jsonify({"ok": False, "error": "用户不存在"}), 404
+        if (user.protocol or "").lower() != "wireguard":
+            return jsonify({"ok": False, "error": "该节点不是 WireGuard"}), 400
+        text = wireguard_manager.client_conf(user)
+        filename = _wireguard_conf_filename(user)
+        return Response(
+            text,
+            mimetype="text/plain; charset=utf-8",
+            headers={"Content-Disposition": _download_disposition(filename)},
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        s.close()
+
+
+@bp.route("/remote-wireguard.conf", methods=["GET"])
+@login_required
+def remote_wireguard_conf():
+    remote_id = _parse_remote_user_id(request.args.get("id") or "")
+    if not remote_id:
+        return jsonify({"ok": False, "error": "remote id invalid"}), 400
+    server_id, user_id = remote_id
+    s = get_session()
+    try:
+        server = s.query(ManagedServer).get(server_id)
+        if not server:
+            return jsonify({"ok": False, "error": "server not found"}), 404
+        data, filename = _remote_panel_download(server, f"/api/users/{user_id}/wireguard.conf")
+        filename = filename or f"{server.ip}-{user_id}.conf"
+        return Response(
+            data,
+            mimetype="text/plain; charset=utf-8",
+            headers={"Content-Disposition": _download_disposition(filename)},
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    finally:
+        s.close()
+
+
+@bp.route("/wireguard.zip", methods=["GET"])
+@login_required
+def wireguard_zip():
+    raw_ids = request.args.get("ids") or ""
+    ids = []
+    remote_ids = []
+    for value in raw_ids.split(","):
+        value = value.strip()
+        remote_id = _parse_remote_user_id(value)
+        if remote_id and remote_id not in remote_ids:
+            remote_ids.append(remote_id)
+            continue
+        if value.isdigit():
+            uid = int(value)
+            if uid and uid not in ids:
+                ids.append(uid)
+    if not ids and not remote_ids:
+        return jsonify({"ok": False, "error": "请选择要下载的 WireGuard 节点"}), 400
+
+    s = get_session()
+    try:
+        users = []
+        if ids:
+            users = (
+                s.query(ProxyUser)
+                .filter(ProxyUser.id.in_(ids), ProxyUser.protocol == "wireguard")
+                .order_by(ProxyUser.id)
+                .all()
+            )
+        remote_servers = {}
+        if remote_ids:
+            server_ids = sorted({server_id for server_id, _ in remote_ids})
+            remote_servers = {
+                server.id: server
+                for server in s.query(ManagedServer).filter(ManagedServer.id.in_(server_ids)).all()
+            }
+        if not users and not remote_ids:
+            return jsonify({"ok": False, "error": "没有可下载的 WireGuard 配置"}), 404
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            used_names = set()
+            for user in users:
+                text = wireguard_manager.client_conf(user)
+                name = _wireguard_conf_filename(user)
+                if name in used_names:
+                    stem = name[:-5] if name.endswith(".conf") else name
+                    name = f"{stem}-{user.id}.conf"
+                used_names.add(name)
+                zf.writestr(name, text)
+            for server_id, user_id in remote_ids:
+                server = remote_servers.get(server_id)
+                if not server:
+                    continue
+                data, name = _remote_panel_download(server, f"/api/users/{user_id}/wireguard.conf")
+                name = name or f"{server.ip}-{user_id}.conf"
+                if name in used_names:
+                    stem = name[:-5] if name.endswith(".conf") else name
+                    name = f"{stem}-{server_id}-{user_id}.conf"
+                used_names.add(name)
+                zf.writestr(name, data)
+        buf.seek(0)
+        return Response(
+            buf.getvalue(),
+            mimetype="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="wireguard-confs.zip"'},
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
         s.close()
 
