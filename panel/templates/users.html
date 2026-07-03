@@ -331,11 +331,11 @@
       </div>
       <div class="modal-body">
         <label class="form-label">原完整入站</label>
-        <textarea class="form-control batch-textarea" id="changeIpOldInbound" rows="3" placeholder="例如：169.214.189.218|21175|aes-256-gcm|x9898|2026-07-20"></textarea>
+        <textarea class="form-control batch-textarea" id="changeIpOldInbound" rows="6" placeholder="一行一个，例如：&#10;169.214.189.218|21175|aes-256-gcm|x9898|2026-07-20"></textarea>
         <label class="form-label mt-3">新 IP</label>
-        <input class="form-control" id="changeIpNewIp" list="changeIpOptions" placeholder="留空按新建筛选自动选择，或指定服务器管理里的新 IP">
+        <textarea class="form-control batch-textarea" id="changeIpNewIp" rows="3" placeholder="留空按新建筛选自动选择；也可一行一个指定新 IP，或填一个 IP 批量指定"></textarea>
         <datalist id="changeIpOptions"></datalist>
-        <div class="batch-match-hint" id="changeIpHint">先查询原入站的用户和项目，按新建排除规则创建新入站；新建成功后才删除原入站。</div>
+        <div class="batch-match-hint" id="changeIpHint">支持批量。先查询原入站的用户和项目，按新建排除规则创建新入站；新建成功后才删除原入站。</div>
         <pre class="create-result-box mt-3 d-none" id="changeIpResultBox"></pre>
       </div>
       <div class="modal-footer">
@@ -1056,8 +1056,8 @@ function changePage(page) { currentPage = page; renderUsers(); }
 
 function openChangeIpModal() {
   const ids = selectedIds();
-  const first = ids.length === 1 ? allUsers.find(u => String(u.id) === String(ids[0])) : null;
-  $('#changeIpOldInbound').val(first ? outputLine(first) : '');
+  const rows = ids.map(id => allUsers.find(u => String(u.id) === String(id))).filter(Boolean);
+  $('#changeIpOldInbound').val(rows.length ? outputLines(rows).join('\n') : '');
   $('#changeIpNewIp').val('');
   $('#changeIpResultBox').addClass('d-none').text('');
   $('#btnCopyChangeIpResult').addClass('d-none');
@@ -1071,8 +1071,9 @@ function openChangeIpModal() {
 async function changeInboundIp() {
   const oldInbound = $('#changeIpOldInbound').val().trim();
   const newIp = $('#changeIpNewIp').val().trim();
+  const count = oldInbound.split(/\n+/).map(line => line.trim()).filter(Boolean).length;
   if (!oldInbound) return toast('请输入原完整入站', 'error');
-  if (!confirm('确定先创建新入站，成功后再删除原入站？')) return;
+  if (!confirm(`确定批量更换 ${count} 条入站？系统会先创建新入站，成功后再删除原入站。`)) return;
   const btn = document.getElementById('btnConfirmChangeIp');
   const oldText = btn.textContent;
   btn.disabled = true;
@@ -1084,11 +1085,11 @@ async function changeInboundIp() {
       $('#changeIpResultBox').text(r.error || '换 IP 失败');
       return toast(r.error || '换 IP 失败', 'error', 8000);
     }
-    const text = r.data.copy_text || `原删除：${r.data.old_deleted || oldInbound}\n新成功更换：${r.data.new_created || ''}`;
+    const text = r.data.copy_text || '';
     $('#changeIpResultBox').text(text);
     $('#btnCopyChangeIpResult').removeClass('d-none');
     await copyText(text);
-    toast('换 IP 成功，结果已复制', 'success', 5000);
+    toast(`换 IP 完成：成功 ${r.data.changed || 0} 条，失败 ${r.data.failed || 0} 条，结果已复制`, r.data.failed ? 'error' : 'success', 7000);
     await loadUsers();
   } finally {
     btn.disabled = false;
