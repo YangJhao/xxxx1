@@ -22,17 +22,56 @@ import psutil
 from flask import Blueprint, Response, jsonify, request, session
 from sqlalchemy.orm import joinedload
 
-from config import is_lite_mode
+try:
+    from config import is_lite_mode
+except ImportError:
+    def is_lite_mode() -> bool:
+        return os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
 from models import Line, ManagedServer, PROTOCOL_TYPES, ProxyUser, SS_METHODS, get_session
 from routes.auth import login_required
-from services.audit_logger import add_operation_log
+try:
+    from services.audit_logger import add_operation_log
+except ModuleNotFoundError:
+    def add_operation_log(*args, **kwargs):
+        return None
 from services import proxy_manager
-from services.proxy_manager import _pop_auto_restore_marker
+try:
+    from services.proxy_manager import _pop_auto_restore_marker
+except ImportError:
+    def _pop_auto_restore_marker(note):
+        return None, note
 from services.cfg_generator import parse_size_to_bytes, write_cfg
 from services.fast_speed import fast_socks5_speed
 from services.limit_manager import apply_limit, clear_limit, parse_speed_to_bps, sync_limits
-from services.traffic_collector import collect_once, snapshot_connections_status
-from services import wireguard_manager
+try:
+    from services.traffic_collector import collect_once, snapshot_connections_status
+except ImportError:
+    from services.traffic_collector import collect_once, snapshot_connections as snapshot_connections_status
+try:
+    from services import wireguard_manager
+except ImportError:
+    class _MissingWireGuardManager:
+        @staticmethod
+        def available():
+            return False
+
+        @staticmethod
+        def create_client_material(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def reload_service(*args, **kwargs):
+            return False
+
+        @staticmethod
+        def transfer_snapshot(*args, **kwargs):
+            return {}
+
+        @staticmethod
+        def client_conf(*args, **kwargs):
+            return ""
+
+    wireguard_manager = _MissingWireGuardManager()
 
 bp = Blueprint("users", __name__, url_prefix="/api/users")
 _limit_worker_lock = threading.Lock()
