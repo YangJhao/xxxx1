@@ -629,6 +629,139 @@ def _reload_proxy(session=None):
     }
 
 
+def _parse_inbound_field(text: str) -> dict:
+    raw = str(text or "").strip()
+    if not raw:
+        raise ValueError("请输入原完整入站")
+    parts = [part.strip() for part in raw.split("|")]
+    if len(parts) < 4:
+        raise ValueError("入站格式错误，至少需要 IP|端口|账号/方法|密码")
+    ip = parts[0]
+    try:
+        socket.inet_aton(ip)
+    except Exception as exc:
+        raise ValueError("入站 IP 格式错误") from exc
+    try:
+        port = int(parts[1])
+    except Exception as exc:
+        raise ValueError("入站端口格式错误") from exc
+    if not (0 < port <= 65535):
+        raise ValueError("入站端口范围错误")
+    third = parts[2]
+    fourth = parts[3]
+    expire = ""
+    for value in reversed(parts[4:]):
+        if _parse_expire(value):
+            expire = value
+            break
+    protocol = "ss" if third in SS_METHODS else "socks5"
+    data = {
+        "raw": raw,
+        "ip": ip,
+        "port": port,
+        "protocol": protocol,
+        "username": "ss_user" if protocol == "ss" else third,
+        "password": fourth,
+        "ss_method": third if protocol == "ss" else None,
+        "ss_password": fourth if protocol == "ss" else None,
+        "expire_at": expire,
+    }
+    return data
+
+
+def _user_matches_inbound(user: ProxyUser, spec: dict) -> bool:
+    if not user.line:
+        return False
+    if str(user.line.public_ip or "") != str(spec.get("ip") or ""):
+        return False
+    if int(user.listen_port or user.line.get_port_by_protocol(user.protocol)) != int(spec.get("port") or 0):
+        return False
+    if (user.protocol or "socks5").lower() != spec.get("protocol"):
+        return False
+    if spec.get("protocol") == "ss":
+        return (user.ss_method or "aes-256-gcm") == spec.get("ss_method") and (user.ss_password or user.password or "") == spec.get("ss_password")
+    return (user.username or "") == spec.get("username") and (user.password or "") == spec.get("password")
+
+
+def _find_remote_inbound(session, spec: dict) -> tuple[ManagedServer | None, dict | None]:
+    servers = session.query(ManagedServer).filter(ManagedServer.ip == spec["ip"]).all()
+    for server in servers:
+        try:
+            rows = (_remote_panel_get(server, "/api/users", timeout=8).get("data") or [])
+        except Exception:
+            continue
+        for item in rows:
+            try:
+                port = int(item.get("listen_port") or item.get("port") or 0)
+            except Exception:
+                port = 0
+            if port != spec["port"]:
+                continue
+            if (item.get("protocol") or "socks5").lower() != spec["protocol"]:
+                continue
+            if spec["protocol"] == "ss":
+                if (item.get("ss_method") or "aes-256-gcm") != spec["ss_method"]:
+                    continue
+                if (item.get("ss_password") or item.get("password") or "") != spec["ss_password"]:
+                    continue
+            else:
+                if (item.get("username") or "") != spec["username"] or (item.get("password") or "") != spec["password"]:
+                    continue
+            return server, item
+    return None, None
+
+
+def _change_ip_output(spec: dict, new_ip: str) -> str:
+    expire = spec.get("expire_at") or ""
+    if spec["protocol"] == "ss":
+        return f"{new_ip}|{spec['port']}|{spec['ss_method']}|{spec['ss_password']}|{expire}".rstrip("|")
+    return f"{new_ip}|{spec['port']}|{spec['username']}|{spec['password']}|{expire}".rstrip("|")
+
+
+def _remote_has_assignment(server: ManagedServer, owner_name: str, project_name: str) -> bool:
+    owner_need = (owner_name or "").strip()
+    project_need = (project_name or "").strip()
+    if not owner_need and not project_need:
+        return False
+    try:
+        rows = (_remote_panel_get(server, "/api/users", timeout=8).get("data") or [])
+    except Exception:
+        return True
+    for item in rows:
+        owner = (item.get("owner_name") or item.get("username") or "").strip()
+        project = (item.get("project_name") or "").strip()
+        if owner_need and project_need:
+            if owner == owner_need and project == project_need:
+                return True
+        elif owner_need and owner == owner_need:
+            return True
+        elif project_need and project == project_need:
+            return True
+    return False
+
+
+def _select_change_ip_target(session, old_ip: str, requested_ip: str, owner_name: str, project_name: str) -> ManagedServer | None:
+    q = session.query(ManagedServer).filter(ManagedServer.install_status == "installed", ManagedServer.ip != old_ip)
+    if requested_ip:
+        q = q.filter(ManagedServer.ip == requested_ip)
+    servers = q.order_by(ManagedServer.id).all()
+    best = None
+    best_count = None
+    for server in servers:
+        if _remote_has_assignment(server, owner_name, project_name):
+            continue
+        count = 0
+        try:
+            rows = (_remote_panel_get(server, "/api/users", timeout=8).get("data") or [])
+            count = len(rows)
+        except Exception:
+            continue
+        if best is None or count < best_count:
+            best = server
+            best_count = count
+    return best
+
+
 def _apply_user_limit(user):
     if not parse_speed_to_bps(user.speed_limit):
         return {"ok": True, "limited": False, "bps": None, "skipped": True, "output": ""}
@@ -1849,6 +1982,122 @@ def connection_info(uid):
         if not user.status:
             return jsonify({"ok": False, "error": "节点已停用"}), 410
         return jsonify({"ok": True, "data": user.get_connection_info()})
+    finally:
+        s.close()
+
+
+@bp.route("/change-ip", methods=["POST"])
+@login_required
+def change_inbound_ip():
+    data = request.get_json(silent=True) or {}
+    old_text = (data.get("old_inbound") or data.get("old") or "").strip()
+    new_ip = (data.get("new_ip") or data.get("ip") or "").strip()
+    try:
+        if new_ip:
+            socket.inet_aton(new_ip)
+        spec = _parse_inbound_field(old_text)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception:
+        return jsonify({"ok": False, "error": "新 IP 格式错误"}), 400
+    if new_ip == spec["ip"]:
+        return jsonify({"ok": False, "error": "新 IP 和原 IP 一样"}), 400
+
+    s = get_session()
+    try:
+        source = "local"
+        deleted_detail = ""
+        old_remote_server = None
+        old_remote_item = None
+        owner_name = ""
+        project_name = ""
+        speed_limit = data.get("speed_limit") or DEFAULT_SPEED_LIMIT
+        traffic_limit = data.get("traffic_limit") or DEFAULT_TRAFFIC_LIMIT
+        note = data.get("note") or f"换IP自 {spec['ip']}"
+        old_user = (
+            s.query(ProxyUser)
+            .join(Line)
+            .filter(Line.public_ip == spec["ip"], ProxyUser.listen_port == spec["port"], ProxyUser.protocol == spec["protocol"])
+            .all()
+        )
+        old_user = next((user for user in old_user if _user_matches_inbound(user, spec)), None)
+        if old_user:
+            deleted_detail = _format_log_user_detail(old_user)
+            owner_name = old_user.owner_name or old_user.username or spec["username"]
+            project_name = old_user.project_name or ""
+            speed_limit = data.get("speed_limit") or old_user.speed_limit or DEFAULT_SPEED_LIMIT
+            traffic_limit = data.get("traffic_limit") or old_user.traffic_limit or DEFAULT_TRAFFIC_LIMIT
+            note = data.get("note") or old_user.note or note
+        else:
+            source = "remote"
+            old_remote_server, old_remote_item = _find_remote_inbound(s, spec)
+            if not old_remote_server or not old_remote_item:
+                return jsonify({"ok": False, "error": "没有找到要删除的原入站，请确认 IP、端口、协议和密码一致"}), 404
+            deleted_detail = _format_log_user_detail(old_remote_item, old_remote_server.ip)
+            owner_name = old_remote_item.get("owner_name") or old_remote_item.get("username") or spec["username"]
+            project_name = old_remote_item.get("project_name") or ""
+            speed_limit = data.get("speed_limit") or old_remote_item.get("speed_limit") or DEFAULT_SPEED_LIMIT
+            traffic_limit = data.get("traffic_limit") or old_remote_item.get("traffic_limit") or DEFAULT_TRAFFIC_LIMIT
+            note = data.get("note") or old_remote_item.get("note") or note
+
+        owner_name = data.get("owner_name") or owner_name or spec["username"]
+        project_name = data.get("project_name") or project_name or "换IP"
+        target_server = _select_change_ip_target(s, spec["ip"], new_ip, owner_name, project_name)
+        if not target_server:
+            if new_ip:
+                return jsonify({"ok": False, "error": f"新 IP {new_ip} 不可用，或已经有 {owner_name}|{project_name} 的入站"}), 400
+            return jsonify({"ok": False, "error": f"没有符合排除规则的可用新 IP：排除 {owner_name}|{project_name}"}), 400
+        new_ip = target_server.ip
+
+        create_payload = {
+            "protocol": spec["protocol"],
+            "custom_port": spec["port"],
+            "count": 1,
+            "server_ids": [target_server.id],
+            "remote_count": 1,
+            "line_id": "",
+            "line_ids": [],
+            "username": spec["username"],
+            "password": spec["password"],
+            "ss_method": spec.get("ss_method") or "aes-256-gcm",
+            "ss_password": spec.get("ss_password") or spec["password"],
+            "expire_at": spec.get("expire_at") or "",
+            "owner_name": owner_name,
+            "project_name": project_name,
+            "speed_limit": speed_limit,
+            "traffic_limit": traffic_limit,
+            "note": note,
+        }
+        created = _create_on_managed_servers(s, [target_server.id], create_payload, 1)
+        created_rows = (created or {}).get("created") or []
+        if not created_rows:
+            error = "；".join(((created or {}).get("errors") or [])[:3]) or "新 IP 创建失败"
+            return jsonify({"ok": False, "error": f"新入站创建失败，原入站未删除：{error}", "data": {"old_kept": deleted_detail}}), 500
+
+        if old_user:
+            limit_ids = [old_user.id]
+            s.delete(old_user)
+            s.commit()
+            _reload_proxy(s)
+            _clear_user_limits_background(limit_ids)
+        else:
+            _remote_panel_delete(old_remote_server, f"/api/users/{old_remote_item.get('id')}")
+
+        output = _change_ip_output(spec, new_ip)
+        created_detail = _format_log_user_detail(created_rows[0], new_ip)
+        _add_user_operation_log(
+            s,
+            "一键换IP",
+            f"source={source}; old_deleted={deleted_detail}; new_created={created_detail}; output={output}",
+        )
+        s.commit()
+        return jsonify({"ok": True, "data": {
+            "old_deleted": spec["raw"],
+            "new_created": output,
+            "copy_text": f"原删除：{spec['raw']}\n新成功更换：{output}",
+            "created": created_rows,
+            "source": source,
+        }})
     finally:
         s.close()
 

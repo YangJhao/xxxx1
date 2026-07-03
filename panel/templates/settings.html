@@ -59,14 +59,17 @@
 
   <section class="card-dark settings-card">
     <div class="settings-card-title"><i class="bi bi-cloud-arrow-up"></i><h5>在线升级</h5></div>
-    <p class="form-hint">上传新版 zip 包，或填写升级包 URL。升级前会自动备份被覆盖的程序文件，data 数据目录不会被覆盖。</p>
+    <p class="form-hint">点击一键更新会自动从 Git 获取最新升级包。升级前会自动备份被覆盖的程序文件，data 数据目录不会被覆盖。</p>
+    <div class="settings-actions">
+      <button class="btn btn-primary" id="btnUpgradeGit"><i class="bi bi-cloud-arrow-down"></i> 一键更新</button>
+      <button class="btn btn-warning" id="btnRestartPanel"><i class="bi bi-arrow-repeat"></i> 重启面板</button>
+    </div>
     <div class="settings-inline">
-      <input class="form-control" id="upgradeUrl" placeholder="https://example.com/42ipwin-upgrade.zip">
+      <input class="form-control" id="upgradeUrl" placeholder="备用升级包 URL，可不填">
       <button class="btn btn-primary" id="btnUpgradeUrl"><i class="bi bi-cloud-download"></i> URL 升级</button>
     </div>
     <div class="settings-actions">
       <button class="btn btn-soft" id="btnPickUpgrade"><i class="bi bi-upload"></i> 上传升级包</button>
-      <button class="btn btn-warning" id="btnRestartPanel"><i class="bi bi-arrow-repeat"></i> 重启面板</button>
       <input class="d-none" id="upgradeFile" type="file" accept=".zip">
     </div>
     <div class="form-hint" id="upgradeResult">当前版本: {{ app_version }}</div>
@@ -172,8 +175,35 @@ async function upgradeByUrl() {
     $('#upgradeResult').text(text);
     toast(`${text} 请重启面板服务生效。`, 'success', 8000);
     await loadBackups();
+  } catch (e) {
+    const msg = e.message || '升级失败';
+    $('#upgradeResult').text(msg);
+    toast(msg, 'error', 8000);
   } finally {
     $('#btnUpgradeUrl').prop('disabled', false);
+  }
+}
+
+async function upgradeByGit() {
+  if (!confirm('确定从 Git 自动下载升级包并更新？升级前会自动备份程序文件。')) return;
+  $('#btnUpgradeGit').prop('disabled', true);
+  $('#upgradeResult').text('正在从 Git 下载并升级...');
+  try {
+    const r = await api.post('/api/settings/upgrade-git', {});
+    if (!r.ok) {
+      $('#upgradeResult').text(r.error || '升级失败');
+      return toast(r.error || '升级失败', 'error', 8000);
+    }
+    const text = upgradeSummary(r.data);
+    $('#upgradeResult').text(`${text} 来源: ${r.data.url || 'Git'}`);
+    toast(`${text} 请重启面板服务生效。`, 'success', 8000);
+    await loadBackups();
+  } catch (e) {
+    const msg = e.message || '升级失败';
+    $('#upgradeResult').text(msg);
+    toast(msg, 'error', 8000);
+  } finally {
+    $('#btnUpgradeGit').prop('disabled', false);
   }
 }
 
@@ -244,6 +274,7 @@ $(async () => {
   $('#btnServiceStart').on('click', () => serviceAction('start'));
   $('#btnServiceStop').on('click', () => serviceAction('stop'));
   $('#btnServiceReload').on('click', () => serviceAction('reload'));
+  $('#btnUpgradeGit').on('click', upgradeByGit);
   $('#btnUpgradeUrl').on('click', upgradeByUrl);
   $('#btnPickUpgrade').on('click', pickUpgradeFile);
   $('#upgradeFile').on('change', upgradeByFile);

@@ -52,6 +52,10 @@ UPGRADE_SKIP_NAMES = {
     "3proxy/3proxy.pid",
     "sing-box/sing-box.pid",
 }
+DEFAULT_GIT_UPGRADE_URL = os.environ.get(
+    "IPWIN42_UPGRADE_URL",
+    "https://codeload.github.com/YangJhao/xxxx1/zip/refs/tags/lite34",
+)
 
 
 def _timestamp() -> str:
@@ -86,13 +90,16 @@ def _create_backup_zip() -> Path:
 
 
 def _safe_zip_members(zf: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    raw_names = [info.filename.replace("\\", "/").lstrip("/") for info in zf.infolist()]
+    roots = {name.split("/", 1)[0] for name in raw_names if "/" in name and name.split("/", 1)[0]}
+    strip_root = next(iter(roots)) if len(roots) == 1 else ""
     members = []
     for info in zf.infolist():
         name = info.filename.replace("\\", "/").lstrip("/")
         parts = [p for p in name.split("/") if p]
         if not parts or any(p == ".." for p in parts):
             continue
-        if parts[0].lower() in {"42ipwin", "42ipwin-main", "42ipwin-windows-deploy"}:
+        if parts[0].lower() in {"42ipwin", "42ipwin-main", "42ipwin-windows-deploy"} or parts[0] == strip_root:
             name = "/".join(parts[1:])
         if not name or name.endswith("/"):
             continue
@@ -170,30 +177,7 @@ def _download_upgrade_package(url: str) -> Path:
 
 
 def _schedule_panel_restart(delay: float = 1.0):
-    project = str(Path(PROJECT_DIR).resolve())
-    app_path = str((Path(PROJECT_DIR) / "panel" / "app.py").resolve())
-    python_exe = sys.executable
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS if os.name == "nt" else 0
-    child_code = (
-        "import subprocess,time,os,sys;"
-        f"time.sleep({float(delay) + 1.0!r});"
-        f"subprocess.Popen({[python_exe, app_path, '--no-browser']!r}, cwd={project!r}, "
-        f"creationflags={flags!r} if os.name == 'nt' else 0, "
-        "close_fds=True)"
-    )
-
-    def restart_worker():
-        try:
-            subprocess.Popen(
-                [python_exe, "-c", child_code],
-                cwd=project,
-                creationflags=flags,
-                close_fds=True,
-            )
-        finally:
-            os._exit(0)
-
-    threading.Timer(delay, restart_worker).start()
+    raise RuntimeError("网页重启已禁用，请使用服务器守护脚本或 WinRM 重启面板")
 
 
 def _restore_from_db_file(src: Path):
@@ -244,7 +228,7 @@ def _disk_probe(path):
 @bp.route("/status", methods=["GET"])
 @login_required
 def status():
-    return jsonify({"ok": True, "data": proxy_manager.get_status()})
+    return jsonify({"ok": True, "data": proxy_manager.health_check()})
 
 
 @bp.route("/proxy/start", methods=["POST"])
@@ -269,6 +253,9 @@ def stop_proxy():
 def reload_proxy():
     try:
         data = request.get_json(silent=True) or {}
+        if data.get("no_restart") or data.get("hot_reload"):
+            status = proxy_manager.reload_config_no_restart()
+            return jsonify({"ok": bool(status.get("ok")), "data": status})
         force = bool(data.get("force"))
         pid = proxy_manager.restart_config() if force else proxy_manager.reload_config()
         return jsonify({"ok": True, "data": {"pid": pid, "restarted": force}})
@@ -604,6 +591,19 @@ def settings_upgrade_url():
         package = _download_upgrade_package(url)
         result = _apply_upgrade_zip(package)
         result["package"] = str(package)
+        return jsonify({"ok": True, "data": result})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@bp.route("/settings/upgrade-git", methods=["POST"])
+@login_required
+def settings_upgrade_git():
+    try:
+        package = _download_upgrade_package(DEFAULT_GIT_UPGRADE_URL)
+        result = _apply_upgrade_zip(package)
+        result["package"] = str(package)
+        result["url"] = DEFAULT_GIT_UPGRADE_URL
         return jsonify({"ok": True, "data": result})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500

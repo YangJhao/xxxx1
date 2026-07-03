@@ -32,6 +32,7 @@
       <button class="btn btn-danger" id="btnCleanExpired"><i class="bi bi-calendar-x"></i> 清理到期</button>
       <button class="btn btn-warning" id="btnBatchStop"><i class="bi bi-pause-circle"></i> 批量停止</button>
       <button class="btn btn-danger" id="btnBatchDelete"><i class="bi bi-trash3"></i> 批量删除</button>
+      <button class="btn btn-soft" id="btnChangeIp"><i class="bi bi-arrow-left-right"></i> 一键换IP</button>
       <button class="btn btn-soft" id="btnRenew"><i class="bi bi-calendar-plus"></i> 续费</button>
       <button class="btn btn-soft" id="btnExport"><i class="bi bi-download"></i> 导出</button>
       {% else %}
@@ -42,6 +43,7 @@
       <button class="btn btn-soft" id="btnAssignProject"><i class="bi bi-folder-check"></i> 分配项目</button>
       <button class="btn btn-warning" id="btnBatchStop"><i class="bi bi-pause-circle"></i> 批量停止</button>
       <button class="btn btn-danger" id="btnBatchDelete"><i class="bi bi-trash3"></i> 批量删除</button>
+      <button class="btn btn-soft" id="btnChangeIp"><i class="bi bi-arrow-left-right"></i> 一键换IP</button>
       <button class="btn btn-soft" id="btnRenew"><i class="bi bi-calendar-plus"></i> 续费</button>
       <button class="btn btn-soft" id="btnExport"><i class="bi bi-download"></i> 导出</button>
       {% endif %}
@@ -314,6 +316,31 @@
       </div>
       <div class="modal-footer">
         <button class="btn btn-danger" id="btnConfirmBatchDelete">开始删除</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="changeIpModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark batch-action-modal">
+      <div class="modal-header">
+        <h5 class="modal-title">一键换IP</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label class="form-label">原完整入站</label>
+        <textarea class="form-control batch-textarea" id="changeIpOldInbound" rows="3" placeholder="例如：169.214.189.218|21175|aes-256-gcm|x9898|2026-07-20"></textarea>
+        <label class="form-label mt-3">新 IP</label>
+        <input class="form-control" id="changeIpNewIp" list="changeIpOptions" placeholder="留空按新建筛选自动选择，或指定服务器管理里的新 IP">
+        <datalist id="changeIpOptions"></datalist>
+        <div class="batch-match-hint" id="changeIpHint">先查询原入站的用户和项目，按新建排除规则创建新入站；新建成功后才删除原入站。</div>
+        <pre class="create-result-box mt-3 d-none" id="changeIpResultBox"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnConfirmChangeIp">开始换IP</button>
+        <button class="btn btn-soft d-none" id="btnCopyChangeIpResult">复制结果</button>
         <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
       </div>
     </div>
@@ -1026,6 +1053,53 @@ function renderUsers() {
 
 function selectedIds() { return $('.row-check:checked').map((_, el) => String(el.value || '')).get().filter(Boolean); }
 function changePage(page) { currentPage = page; renderUsers(); }
+
+function openChangeIpModal() {
+  const ids = selectedIds();
+  const first = ids.length === 1 ? allUsers.find(u => String(u.id) === String(ids[0])) : null;
+  $('#changeIpOldInbound').val(first ? outputLine(first) : '');
+  $('#changeIpNewIp').val('');
+  $('#changeIpResultBox').addClass('d-none').text('');
+  $('#btnCopyChangeIpResult').addClass('d-none');
+  const options = visibleManagedServers()
+    .filter(server => server.install_status === 'installed')
+    .map(server => `<option value="${escapeHtml(server.ip)}">${escapeHtml(server.ip)} 入站 ${escapeHtml(server.inbound_count || 0)} 个</option>`);
+  $('#changeIpOptions').html(options.join(''));
+  new bootstrap.Modal(document.getElementById('changeIpModal')).show();
+}
+
+async function changeInboundIp() {
+  const oldInbound = $('#changeIpOldInbound').val().trim();
+  const newIp = $('#changeIpNewIp').val().trim();
+  if (!oldInbound) return toast('请输入原完整入站', 'error');
+  if (!confirm('确定先创建新入站，成功后再删除原入站？')) return;
+  const btn = document.getElementById('btnConfirmChangeIp');
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '更换中...';
+  $('#changeIpResultBox').removeClass('d-none').text('正在按排除规则创建新入站，成功后再删除原入站...');
+  try {
+    const r = await api.post('/api/users/change-ip', { old_inbound: oldInbound, new_ip: newIp });
+    if (!r.ok) {
+      $('#changeIpResultBox').text(r.error || '换 IP 失败');
+      return toast(r.error || '换 IP 失败', 'error', 8000);
+    }
+    const text = r.data.copy_text || `原删除：${r.data.old_deleted || oldInbound}\n新成功更换：${r.data.new_created || ''}`;
+    $('#changeIpResultBox').text(text);
+    $('#btnCopyChangeIpResult').removeClass('d-none');
+    await copyText(text);
+    toast('换 IP 成功，结果已复制', 'success', 5000);
+    await loadUsers();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+async function copyChangeIpResult(btn) {
+  const ok = await copyElementText(document.getElementById('changeIpResultBox'));
+  if (ok) flashCopyButton(btn, true, '已复制');
+}
 
 function parseBatchLines(text) {
   return String(text || '')
@@ -1756,6 +1830,7 @@ $(async () => {
   $('#btnCleanExpired').on('click', cleanExpired);
   $('#btnBatchStop').on('click', openBatchStopModal);
   $('#btnBatchDelete').on('click', openBatchDeleteModal);
+  $('#btnChangeIp').on('click', openChangeIpModal);
   $('#btnBatchEditLimits').on('click', openBatchLimitModal);
   $('#btnAssignUser').on('click', openAssignUserModal);
   $('#btnAssignOperator').on('click', openAssignOperatorModal);
@@ -1763,6 +1838,8 @@ $(async () => {
   $('#btnRenew').on('click', openRenewModal);
   $('#btnConfirmBatchDelete').on('click', batchDelete);
   $('#btnConfirmBatchStop').on('click', batchStop);
+  $('#btnConfirmChangeIp').on('click', changeInboundIp);
+  $('#btnCopyChangeIpResult').on('click', function() { copyChangeIpResult(this); });
   $('#btnConfirmBatchLimit').on('click', batchEditLimits);
   $('#btnConfirmAssignUser').on('click', assignUser);
   $('#btnConfirmAssignOperator').on('click', assignOperator);
