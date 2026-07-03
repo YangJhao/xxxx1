@@ -1390,10 +1390,8 @@ async function saveUser() {
   const selectedLineIds = lineValues.filter(value => !String(value).startsWith('server:'));
   const hasRemoteTargets = serverIds.length > 0;
   const localCount = useLiteLine ? 1 : 0;
-  const selectedLocalTargets = (!hasRemoteTargets && !useLiteLine && !useAllLines) ? selectedLineIds.length : 0;
   const requestedCount = Math.max(1, parseInt($('#userCount').val() || '1', 10));
-  const targetCount = Math.max(requestedCount, localCount + serverIds.length + selectedLocalTargets);
-  const remoteCount = hasRemoteTargets ? Math.max(0, targetCount - localCount) : 0;
+  const remoteCount = hasRemoteTargets ? Math.max(0, requestedCount - localCount) : 0;
   const data = {
     username: proto === 'hysteria2' ? 'hy2' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential)),
     owner_name: $('#userOwner').val().trim() || (proto === 'hysteria2' ? '' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential))),
@@ -1411,7 +1409,7 @@ async function saveUser() {
     speed_limit: normalizeSpeedInput($('#userSpeedLimit').val()),
     traffic_limit: $('#userTrafficLimit').val().trim(),
     expire_at: expireValue || null,
-    count: targetCount,
+    count: requestedCount,
     note: $('#userNote').val().trim(),
   };
   try {
