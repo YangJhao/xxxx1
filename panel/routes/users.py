@@ -447,15 +447,31 @@ def _used_listen_ports(session) -> set[int]:
     return ports
 
 
+def _port_available_on_host(port: int) -> bool:
+    try:
+        port = int(port)
+    except Exception:
+        return False
+    for family, sock_type in ((socket.AF_INET, socket.SOCK_STREAM), (socket.AF_INET, socket.SOCK_DGRAM)):
+        sock = socket.socket(family, sock_type)
+        try:
+            sock.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+        finally:
+            sock.close()
+    return True
+
+
 def _random_available_port(session, used_ports: set[int] | None = None) -> int:
     used_ports = used_ports if used_ports is not None else _used_listen_ports(session)
     for _ in range(3000):
         port = secrets.randbelow(RANDOM_PORT_MAX - RANDOM_PORT_MIN + 1) + RANDOM_PORT_MIN
-        if port not in used_ports:
+        if port not in used_ports and _port_available_on_host(port):
             used_ports.add(port)
             return port
     for port in range(RANDOM_PORT_MIN, RANDOM_PORT_MAX + 1):
-        if port not in used_ports:
+        if port not in used_ports and _port_available_on_host(port):
             used_ports.add(port)
             return port
     raise ValueError("没有可用端口")
@@ -1280,6 +1296,8 @@ def _create_user_v3():
             forced_port = int(custom_port)
             if not (1024 < forced_port < 65536):
                 return jsonify({"ok": False, "error": "端口范围错误"}), 400
+            if not _port_available_on_host(forced_port):
+                return jsonify({"ok": False, "error": f"端口 {forced_port} 已被系统进程占用"}), 400
             if str(line_id).lower() != "all":
                 exists = (
                     s.query(ProxyUser)

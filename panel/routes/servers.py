@@ -513,6 +513,44 @@ def _install_one(row):
             pass
 
 
+def _upgrade_one(row):
+    ssh = _ssh_connect(row, timeout=20)
+    try:
+        command = r"""python3 - <<'PY'
+import http.cookiejar
+import json
+import urllib.request
+
+base = 'http://127.0.0.1:18080'
+cj = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+def post(path, body):
+    raw = json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(base + path, data=raw, headers={'Content-Type': 'application/json'}, method='POST')
+    with opener.open(req, timeout=180) as resp:
+        return json.loads(resp.read().decode('utf-8', 'replace'))
+
+login = post('/api/login', {'username': 'admin', 'password': 'admin123'})
+if not login.get('ok'):
+    raise SystemExit('login failed: ' + (login.get('error') or 'unknown'))
+result = post('/api/settings/upgrade-git', {})
+print(json.dumps(result, ensure_ascii=False))
+if not result.get('ok'):
+    raise SystemExit(result.get('error') or 'upgrade failed')
+PY
+systemctl restart 42ipwin
+sleep 2
+systemctl is-active 42ipwin
+"""
+        code, out, err = _run(ssh, command, timeout=300)
+        if code != 0:
+            raise RuntimeError((err or out or f"upgrade exit {code}")[-1200:])
+        return (out or err)[-1200:]
+    finally:
+        ssh.close()
+
+
 @bp.route("/install", methods=["POST"])
 @login_required
 def install_servers():
@@ -564,6 +602,61 @@ def install_servers():
 
         threading.Thread(target=run_background_install, args=(jobs,), daemon=True).start()
         _log("一键安装42轻量", f"后台并发安装 {len(results)} 台")
+        return jsonify({"ok": True, "servers": results})
+    finally:
+        s.close()
+
+
+@bp.route("/upgrade", methods=["POST"])
+@login_required
+def upgrade_servers():
+    ids = [int(x) for x in (request.json or {}).get("ids", []) if str(x).isdigit()]
+    if not ids:
+        return jsonify({"ok": False, "error": "请选择服务器"}), 400
+    s = get_session()
+    try:
+        rows = s.query(ManagedServer).filter(ManagedServer.id.in_(ids)).all()
+        jobs = []
+        for row in rows:
+            row.last_error = "升级任务已提交，后台并发执行中..."
+            row.updated_at = datetime.utcnow()
+            jobs.append(SimpleNamespace(
+                id=row.id,
+                ip=row.ip,
+                ssh_port=row.ssh_port,
+                username=row.username,
+                password=row.password,
+            ))
+        s.commit()
+        results = [row.to_dict() for row in rows]
+
+        def upgrade_row(job):
+            try:
+                output = _upgrade_one(job)
+                return job.id, "online", "installed", output
+            except Exception as exc:
+                return job.id, "error", "failed", str(exc)[-1200:]
+
+        def run_background_upgrade(jobs_to_run):
+            bg_session = get_session()
+            try:
+                with ThreadPoolExecutor(max_workers=min(10, max(1, len(jobs_to_run)))) as executor:
+                    futures = [executor.submit(upgrade_row, job) for job in jobs_to_run]
+                    for future in as_completed(futures):
+                        row_id, status, install_status, message = future.result()
+                        row = bg_session.query(ManagedServer).get(row_id)
+                        if not row:
+                            continue
+                        row.status = status
+                        row.install_status = install_status
+                        row.last_error = message
+                        row.updated_at = datetime.utcnow()
+                        bg_session.commit()
+            finally:
+                bg_session.close()
+
+        threading.Thread(target=run_background_upgrade, args=(jobs,), daemon=True).start()
+        _log("一键升级42轻量", f"后台并发升级 {len(results)} 台")
         return jsonify({"ok": True, "servers": results})
     finally:
         s.close()

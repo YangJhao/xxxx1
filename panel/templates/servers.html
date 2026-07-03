@@ -29,6 +29,7 @@
     <div class="toolbar-actions">
       <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#serverModal" id="btnAddServer"><i class="bi bi-plus-lg"></i> 批量添加服务器</button>
       <button class="btn btn-warning" id="btnInstallSelected"><i class="bi bi-cloud-arrow-up"></i> 一键安装42轻量</button>
+      <button class="btn btn-primary" id="btnUpgradeSelected"><i class="bi bi-cloud-arrow-down"></i> 一键升级</button>
       <button class="btn btn-soft" id="btnDetectLiteSelected"><i class="bi bi-search"></i> 检测轻量</button>
       <button class="btn btn-soft" id="btnTestSelected"><i class="bi bi-wifi"></i> 测试连接</button>
       <button class="btn btn-soft" id="btnRefreshServers"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
@@ -454,6 +455,14 @@ document.addEventListener('DOMContentLoaded', () => {
       loadingText: '安装中...',
       startText: '已开始批量安装，这个过程可能需要几分钟',
       markInstalling: true,
+    });
+  });
+  document.getElementById('btnUpgradeSelected').addEventListener('click', () => {
+    if (!confirm('确定对选中的服务器执行一键升级？升级前子机会自动备份程序文件。')) return;
+    runServerAction('/api/servers/upgrade', selectedIds(), '升级任务已提交', {
+      selector: '#btnUpgradeSelected',
+      loadingText: '升级中...',
+      startText: '已开始批量升级，这个过程可能需要几分钟',
     });
   });
   document.getElementById('btnTestSelected').addEventListener('click', () => runAction('/api/servers/test', selectedIds(), '连接测试完成'));
