@@ -629,9 +629,26 @@ def _reload_proxy(session=None):
     }
 
 
-def _restart_proxy_after_delete() -> dict:
+def _apply_proxy_after_delete(session, deleted_targets: list[tuple[str, int, str]]) -> dict:
+    hot = proxy_manager.reload_config_no_restart(session)
+    lingering = []
+    time.sleep(0.5)
+    for host, port, protocol in deleted_targets:
+        if port and _is_tcp_listening_on(host, int(port)):
+            lingering.append(f"{host}:{port}/{protocol}")
+    if not lingering:
+        hot["deleted_listeners_released"] = True
+        hot["lingering"] = []
+        return hot
     pid = proxy_manager.restart_config()
-    return {"ok": True, "restarted": True, "pid": pid, "message": "deleted inbound; restarted sing-box to release old listeners"}
+    return {
+        "ok": True,
+        "restarted": True,
+        "pid": pid,
+        "deleted_listeners_released": False,
+        "lingering": lingering,
+        "message": "hot reload left deleted listeners active; restarted sing-box",
+    }
 
 
 def _parse_inbound_field(text: str) -> dict:
@@ -1570,12 +1587,13 @@ def batch_delete():
         count = len(users)
         limit_ids = [user.id for user in users]
         local_log_details = [_format_log_user_detail(user) for user in users]
+        deleted_targets = [_user_listen_target(user) for user in users]
         for user in users:
             s.delete(user)
         s.commit()
         apply_status = {}
         if users:
-            apply_status = _restart_proxy_after_delete()
+            apply_status = _apply_proxy_after_delete(s, deleted_targets)
             _clear_user_limits_background(limit_ids)
 
         errors = []
@@ -1811,9 +1829,10 @@ def delete_user(uid):
             return jsonify({"ok": False, "error": "用户不存在"}), 404
         limit_ids = [user.id]
         log_detail = _format_log_user_detail(user)
+        deleted_targets = [_user_listen_target(user)]
         s.delete(user)
         s.commit()
-        apply_status = _restart_proxy_after_delete()
+        apply_status = _apply_proxy_after_delete(s, deleted_targets)
         _clear_user_limits_background(limit_ids)
         _add_user_operation_log(s, "删除入站", log_detail)
         s.commit()
@@ -2069,9 +2088,10 @@ def _change_inbound_ip_one(s, data: dict, spec: dict, requested_ip: str = "") ->
 
     if old_user:
         limit_ids = [old_user.id]
+        deleted_targets = [_user_listen_target(old_user)]
         s.delete(old_user)
         s.commit()
-        _restart_proxy_after_delete()
+        _apply_proxy_after_delete(s, deleted_targets)
         _clear_user_limits_background(limit_ids)
     else:
         _remote_panel_delete(old_remote_server, f"/api/users/{old_remote_item.get('id')}")

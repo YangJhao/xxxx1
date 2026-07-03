@@ -54,7 +54,7 @@ UPGRADE_SKIP_NAMES = {
 }
 DEFAULT_GIT_UPGRADE_URL = os.environ.get(
     "IPWIN42_UPGRADE_URL",
-    "https://codeload.github.com/YangJhao/xxxx1/zip/refs/tags/lite36",
+    "https://codeload.github.com/YangJhao/xxxx1/zip/refs/tags/lite37",
 )
 
 
