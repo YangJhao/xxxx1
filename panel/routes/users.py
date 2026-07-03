@@ -1273,6 +1273,7 @@ def _create_user_v3():
 
         line_key = str(line_id).lower()
         lite_create = False
+        batch_selected_lines = bool(line_ids)
         if line_ids:
             selected_lines = _target_lines_by_ids(s, line_ids)
             lines = []
@@ -1321,7 +1322,7 @@ def _create_user_v3():
         for line in lines:
             if len(created) >= count:
                 break
-            if not lite_create and _line_project_used(s, line.id, project_name):
+            if not lite_create and not batch_selected_lines and _line_project_used(s, line.id, project_name):
                 skipped.append(f"{line.name} / {line.public_ip}: 项目 {project_name or '-'} 已占用该节点，已跳过")
                 continue
             if protocol == "hysteria2":
