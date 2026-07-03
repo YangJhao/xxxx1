@@ -631,6 +631,12 @@ def write_cfg(session=None) -> str:
         f.write(cfg_text)
     try:
         _apply_linux_nat(session)
+        try:
+            from services.traffic_collector import ensure_port_counters
+
+            ensure_port_counters(session)
+        except Exception:
+            pass
     finally:
         if own_session:
             session.close()

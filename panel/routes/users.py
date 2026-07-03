@@ -51,6 +51,55 @@ def current_operator_name() -> str:
     return name or "admin"
 
 
+def _log_client_ip() -> str:
+    return request.headers.get("X-Forwarded-For", "").split(",", 1)[0].strip() or request.remote_addr or ""
+
+
+def _format_log_user_detail(user_or_item, server_ip: str | None = None) -> str:
+    if isinstance(user_or_item, dict):
+        item = user_or_item
+        ip = server_ip or item.get("managed_server_ip") or item.get("line_ip") or item.get("server") or item.get("ip") or "-"
+        port = item.get("listen_port") or item.get("port") or "-"
+        protocol = item.get("protocol") or "-"
+        username = item.get("username") or item.get("account") or "-"
+        owner = item.get("owner_name") or item.get("owner") or "-"
+        project = item.get("project_name") or item.get("project") or "-"
+        uid = item.get("local_id") or item.get("id") or "-"
+        expire_at = item.get("expire_at") or item.get("expire_date") or "-"
+    else:
+        user = user_or_item
+        line = getattr(user, "line", None)
+        ip = server_ip or (line.public_ip if line else "-")
+        port = user.listen_port or (line.get_port_by_protocol(user.protocol) if line else "-")
+        protocol = user.protocol or "-"
+        username = user.username or "-"
+        owner = user.owner_name or "-"
+        project = user.project_name or "-"
+        uid = user.id or "-"
+        expire_at = user.expire_at.date().isoformat() if user.expire_at else "-"
+    return (
+        f"server={ip} protocol={protocol} port={port} user={username} "
+        f"owner={owner} project={project} expire={expire_at} id={uid}"
+    )
+
+
+def _add_user_operation_log(db_session, action: str, detail: str) -> None:
+    add_operation_log(
+        db_session,
+        current_operator_name(),
+        "入站管理",
+        action,
+        detail[:4000],
+        _log_client_ip(),
+    )
+
+
+def _compact_log_details(details: list[str], max_items: int = 12) -> str:
+    if len(details) <= max_items:
+        return "; ".join(details)
+    return "; ".join(details[:max_items]) + f"; ... more={len(details) - max_items}"
+
+
 def _gen_password(n: int = 12) -> str:
     chars = string.ascii_letters + string.digits
     return "".join(secrets.choice(chars) for _ in range(n))
@@ -1063,6 +1112,13 @@ def _create_user_v3():
             if not remote_result.get("created"):
                 detail = "；".join((remote_result.get("errors") or [])[:3]) or "远程服务器没有创建成功"
                 return jsonify({"ok": False, "error": f"未创建任何节点：{detail}", "data": remote_result}), 400
+            log_details = [_format_log_user_detail(item) for item in remote_result.get("created", [])]
+            _add_user_operation_log(
+                s,
+                "新增入站",
+                f"count={len(log_details)} scope=remote; {_compact_log_details(log_details)}",
+            )
+            s.commit()
             return jsonify({"ok": True, "data": remote_result})
 
         line_key = str(line_id).lower()
@@ -1210,6 +1266,15 @@ def _create_user_v3():
             return jsonify({"ok": False, "error": f"自动应用配置失败，已回滚本次创建：{detail}", "data": {"rolled_back_ids": created_ids}}), 400
         limited_ids = [u.id for u in created if parse_speed_to_bps(u.speed_limit)]
         _apply_user_limits_background(limited_ids)
+        log_details = [_format_log_user_detail(item) for item in remote_created]
+        log_details.extend(_format_log_user_detail(user) for user in created)
+        if log_details:
+            _add_user_operation_log(
+                s,
+                "新增入站",
+                f"count={len(log_details)} protocol={protocol}; {_compact_log_details(log_details)}",
+            )
+            s.commit()
         result = {
             "created": remote_created + [u.to_dict() for u in created],
             "created_count": len(remote_created) + len(created),
@@ -1262,6 +1327,7 @@ def list_users():
             pass
         connection_status = snapshot_connections_status()
         connection_snapshot = connection_status.get("data") or {}
+        port_counter_users = connection_status.get("port_counter_users") or set()
         wg_totals = wireguard_manager.transfer_snapshot(s)
         expired = _apply_expire_limits(s)
         traffic_disabled = _apply_traffic_limits(s)
@@ -1281,7 +1347,10 @@ def list_users():
             item["live_download"] = int(live.get("download") or 0)
             item["traffic_available"] = bool(connection_status.get("ok"))
             if connection_status.get("ok"):
-                item["traffic_source"] = "sing-box 实时连接统计"
+                if user.id in port_counter_users:
+                    item["traffic_source"] = "系统端口累计统计"
+                else:
+                    item["traffic_source"] = "sing-box 实时连接统计"
             else:
                 item["traffic_source"] = f"sing-box 连接读取失败，已清零: {connection_status.get('error') or 'unknown'}"
             if (user.protocol or "").lower() == "wireguard" and user.id in wg_totals:
@@ -1362,6 +1431,7 @@ def batch_delete():
         users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all() if ids else []
         count = len(users)
         limit_ids = [user.id for user in users]
+        local_log_details = [_format_log_user_detail(user) for user in users]
         for user in users:
             s.delete(user)
         s.commit()
@@ -1377,21 +1447,39 @@ def batch_delete():
                 server_id, user_id = remote_pair
                 server = servers.get(server_id)
                 if not server:
-                    return False, f"server {server_id} not found"
+                    return False, f"server {server_id} not found", ""
+                detail = f"server={server.ip} remote_id={user_id}"
                 try:
+                    try:
+                        remote_rows = (_remote_panel_get(server, "/api/users", timeout=8).get("data") or [])
+                        for item in remote_rows:
+                            if str(item.get("id")) == str(user_id):
+                                detail = _format_log_user_detail(item, server.ip)
+                                break
+                    except Exception:
+                        pass
                     _remote_panel_delete(server, f"/api/users/{user_id}")
-                    return True, ""
+                    return True, "", detail
                 except Exception as exc:
-                    return False, f"{server.ip}:{user_id} {exc}"
+                    return False, f"{server.ip}:{user_id} {exc}", detail
 
             with ThreadPoolExecutor(max_workers=min(10, len(remote_ids))) as executor:
                 futures = [executor.submit(delete_remote, item) for item in remote_ids]
                 for future in as_completed(futures):
-                    ok, error = future.result()
+                    ok, error, detail = future.result()
                     if ok:
                         count += 1
+                        if detail:
+                            local_log_details.append(detail)
                     elif error:
                         errors.append(error)
+        if local_log_details:
+            _add_user_operation_log(
+                s,
+                "删除入站",
+                f"count={len(local_log_details)}; {_compact_log_details(local_log_details)}",
+            )
+            s.commit()
         return jsonify({"ok": True, "data": {"deleted": count, "errors": errors, "limit_clear_queued": len(limit_ids)}})
     finally:
         s.close()
@@ -1583,10 +1671,13 @@ def delete_user(uid):
         if not user:
             return jsonify({"ok": False, "error": "用户不存在"}), 404
         limit_ids = [user.id]
+        log_detail = _format_log_user_detail(user)
         s.delete(user)
         s.commit()
         _reload_proxy(s)
         _clear_user_limits_background(limit_ids)
+        _add_user_operation_log(s, "删除入站", log_detail)
+        s.commit()
         return jsonify({"ok": True})
     finally:
         s.close()

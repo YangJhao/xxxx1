@@ -153,6 +153,46 @@ def _remote_server_counts(server) -> dict:
     }
 
 
+def _detect_lite_install(row) -> tuple[str, str, str, dict]:
+    status = "error"
+    install_status = "idle"
+    messages = []
+    counts = {}
+
+    try:
+        ssh = _ssh_connect(row, timeout=12)
+        try:
+            code, out, err = _run(
+                ssh,
+                "test -f /opt/42IPwin/panel/app.py && "
+                "systemctl is-active 42ipwin 2>/dev/null || true; "
+                "curl -sS -o /dev/null -w 'HTTP:%{http_code}' --max-time 6 http://127.0.0.1:18080/login || true",
+                timeout=30,
+            )
+            text = f"{out}\n{err}".strip()
+            messages.append(text)
+            if "/opt/42IPwin" in text or "active" in text or "HTTP:200" in text or "HTTP:302" in text:
+                status = "online"
+            if "active" in text and ("HTTP:200" in text or "HTTP:302" in text):
+                install_status = "installed"
+        finally:
+            ssh.close()
+    except Exception as exc:
+        messages.append(f"ssh: {exc}")
+
+    if install_status == "installed":
+        try:
+            counts = _remote_server_counts(row)
+        except Exception as exc:
+            messages.append(f"panel: {exc}")
+            counts = {}
+
+    detail = "; ".join(part for part in messages if part).strip()
+    if install_status == "installed":
+        detail = "已检测到 42 轻量面板，入站映射已刷新"
+    return status, install_status, detail[-1200:], counts
+
+
 def _ssh_connect(server, timeout=12):
     try:
         import paramiko
@@ -409,6 +449,33 @@ def test_servers():
             results.append(row.to_dict())
         s.commit()
         _log("测试服务器", f"测试 {len(results)} 台")
+        return jsonify({"ok": True, "servers": results})
+    finally:
+        s.close()
+
+
+@bp.route("/detect-lite", methods=["POST"])
+@login_required
+def detect_lite_servers():
+    ids = [int(x) for x in (request.json or {}).get("ids", []) if str(x).isdigit()]
+    if not ids:
+        return jsonify({"ok": False, "error": "请选择服务器"}), 400
+    s = get_session()
+    results = []
+    try:
+        rows = s.query(ManagedServer).filter(ManagedServer.id.in_(ids)).all()
+        for row in rows:
+            status, install_status, message, counts = _detect_lite_install(row)
+            row.status = status
+            row.install_status = install_status
+            row.last_error = message
+            row.updated_at = datetime.utcnow()
+            data = row.to_dict()
+            if counts:
+                data.update(counts)
+            results.append(data)
+        s.commit()
+        _log("检测轻量安装", f"检测 {len(results)} 台")
         return jsonify({"ok": True, "servers": results})
     finally:
         s.close()

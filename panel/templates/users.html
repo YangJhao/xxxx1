@@ -1852,7 +1852,7 @@ $(async () => {
     $('.line-field').removeClass('d-none').show();
     $('.account-field').toggleClass('d-none', isSs);
     $('.ss-method-field').toggleClass('d-none', !isSs);
-    $('.custom-port-wrap').toggle(['socks5', 'http', 'ss'].includes(proto));
+    $('.custom-port-wrap').toggle(['socks5', 'http', 'ss', 'vless', 'vmess', 'trojan'].includes(proto));
     $('#userUsername').closest('div').toggle(!isHy2 && !isWg);
     $('#userPassword').closest('div').toggle(!isHy2 && !isWg);
     $('#accountLabel').text(isSs ? '加密方式' : '账号');

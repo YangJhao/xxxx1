@@ -155,17 +155,25 @@ def _track_node_pressure(session, connections: list[dict]) -> list[str]:
             continue
         ok = _apply_node_limit(user, NODE_THROTTLE_BPS)
         _throttled_until[uid] = now + NODE_THROTTLE_SECONDS
+        mbps = max(1, int(NODE_THROTTLE_BPS / 1000 / 1000))
+        threshold_mbps = round(NODE_BANDWIDTH_LIMIT_BPS / 1000 / 1000, 2)
+        current_mbps = round(bps / 1000 / 1000, 2)
+        host = user.line.public_ip if user.line else "-"
+        port = _user_port(user)
+        detail = (
+            f"原因=单入站长时间占用带宽；处理=临时限速到{mbps}m，不停用节点；"
+            f"节点={host}:{port}；协议={user.protocol or '-'}；"
+            f"用户={user.owner_name or user.username or '-'}；项目={user.project_name or '-'}；"
+            f"当前带宽={current_mbps}Mbps；阈值={threshold_mbps}Mbps；"
+            f"恢复等待={NODE_THROTTLE_SECONDS}s；执行成功={ok}"
+        )
         add_operation_log(
             session,
             "system",
             "自动保护",
             "自动限速节点",
-            (
-                f"自动限速原因=单节点长期占用带宽；{_node_label(user)}；"
-                f"当前={bps} bps；阈值={NODE_BANDWIDTH_LIMIT_BPS} bps；"
-                f"限速={NODE_THROTTLE_BPS} bps；恢复等待={NODE_THROTTLE_SECONDS}s；执行成功={ok}"
-            ),
-            user.line.public_ip if user.line else "",
+            detail,
+            host,
         )
         session.commit()
         messages.append(f"node throttled to 5m for {NODE_THROTTLE_SECONDS}s; bps={bps}; ok={ok}; {_node_label(user)}")
@@ -176,13 +184,21 @@ def _track_node_pressure(session, connections: list[dict]) -> list[str]:
         user = session.query(ProxyUser).get(uid)
         ok = _apply_node_limit(user, None) if user else False
         if user:
+            host = user.line.public_ip if user.line else "-"
+            port = _user_port(user)
+            detail = (
+                f"原因=临时限速时间结束；处理=恢复节点原限速；"
+                f"节点={host}:{port}；协议={user.protocol or '-'}；"
+                f"用户={user.owner_name or user.username or '-'}；项目={user.project_name or '-'}；"
+                f"执行成功={ok}"
+            )
             add_operation_log(
                 session,
                 "system",
                 "自动保护",
-                "恢复节点限速",
-                f"自动恢复原因=限速时间结束；{_node_label(user)}；执行成功={ok}",
-                user.line.public_ip if user.line else "",
+                "自动恢复限速",
+                detail,
+                host,
             )
             session.commit()
         _throttled_until.pop(uid, None)

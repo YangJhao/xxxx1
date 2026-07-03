@@ -29,6 +29,7 @@
     <div class="toolbar-actions">
       <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#serverModal" id="btnAddServer"><i class="bi bi-plus-lg"></i> 批量添加服务器</button>
       <button class="btn btn-warning" id="btnInstallSelected"><i class="bi bi-cloud-arrow-up"></i> 一键安装42轻量</button>
+      <button class="btn btn-soft" id="btnDetectLiteSelected"><i class="bi bi-search"></i> 检测轻量</button>
       <button class="btn btn-soft" id="btnTestSelected"><i class="bi bi-wifi"></i> 测试连接</button>
       <button class="btn btn-soft" id="btnRefreshServers"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
       <button class="btn btn-soft" id="btnGroupSelected"><i class="bi bi-folder"></i> 批量分组</button>
@@ -265,6 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <td>
           <div class="line-actions">
             <button class="mini-btn warning" data-action="install" data-id="${row.id}">安装</button>
+            <button class="mini-btn" data-action="detect-lite" data-id="${row.id}">检测</button>
             <button class="mini-btn" data-action="test" data-id="${row.id}">测试</button>
             <button class="mini-btn" data-action="edit" data-id="${row.id}">编辑</button>
             <button class="mini-btn danger" data-action="delete" data-id="${row.id}">删除</button>
@@ -431,6 +433,13 @@ document.addEventListener('DOMContentLoaded', () => {
         startText: '已开始安装，这个过程可能需要几分钟',
         markInstalling: true,
       });
+    } else if (btn.dataset.action === 'detect-lite') {
+      await runServerAction('/api/servers/detect-lite', [id], '检测完成，状态和入站映射已刷新', {
+        id,
+        selector: 'button[data-action="detect-lite"]',
+        loadingText: '检测中...',
+        startText: '正在检测轻量面板安装状态',
+      });
     } else if (btn.dataset.action === 'test') {
       await runAction('/api/servers/test', [id], '连接测试完成');
     } else if (btn.dataset.action === 'edit') {
@@ -448,6 +457,13 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
   document.getElementById('btnTestSelected').addEventListener('click', () => runAction('/api/servers/test', selectedIds(), '连接测试完成'));
+  document.getElementById('btnDetectLiteSelected').addEventListener('click', () => {
+    runServerAction('/api/servers/detect-lite', selectedIds(), '检测完成，状态和入站映射已刷新', {
+      selector: '#btnDetectLiteSelected',
+      loadingText: '检测中...',
+      startText: '正在批量检测轻量面板安装状态',
+    });
+  });
   document.getElementById('btnDeleteSelected').addEventListener('click', async () => {
     const ids = selectedIds();
     if (!ids.length) return toast('请选择服务器', 'error');

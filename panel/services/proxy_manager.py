@@ -16,14 +16,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import SING_BOX_CFG, SING_BOX_EXE, SING_BOX_PID
 from services.audit_logger import add_operation_log
 from services.cfg_generator import write_cfg
+from services.limit_manager import apply_limit, apply_limit_bps
 
 
 HEALTH_URLS = (
     "http://127.0.0.1:9090/connections",
     "http://127.0.0.1:9090/configs",
 )
-MAX_CONNECTIONS_PER_PORT = int(os.environ.get("IPWIN42_MAX_PORT_CONNECTIONS", "100"))
+MAX_CONNECTIONS_PER_PORT = int(os.environ.get("IPWIN42_MAX_PORT_CONNECTIONS", "150"))
 AUTO_STOP_RESTORE_SECONDS = int(os.environ.get("IPWIN42_AUTO_STOP_RESTORE_SECONDS", "120"))
+AUTO_PROTECT_THROTTLE_BPS = int(os.environ.get("IPWIN42_AUTO_PROTECT_THROTTLE_BPS", str(5 * 1000 * 1000)))
 AUTO_RESTORE_MARKER = "auto_restore_at="
 
 
@@ -225,11 +227,11 @@ def _fetch_connections(timeout: float = 2.0) -> list[dict]:
     return data.get("connections") or []
 
 
-def _disable_over_limit_users(by_tag: dict[str, list[dict]]) -> tuple[int, str]:
+def _auto_pause_over_limit_users(by_tag: dict[str, list[dict]]) -> tuple[int, str]:
     from datetime import datetime
     from models import ProxyUser, get_session
 
-    disabled = 0
+    paused = 0
     details = []
     session = get_session()
     try:
@@ -244,32 +246,34 @@ def _disable_over_limit_users(by_tag: dict[str, list[dict]]) -> tuple[int, str]:
             except ValueError:
                 continue
             user = session.query(ProxyUser).get(user_id)
-            if not user or not user.status:
+            if not user or not user.status or not user.line:
                 continue
             restore_at = datetime.now() + timedelta(seconds=AUTO_STOP_RESTORE_SECONDS)
             user.status = 0
             reason = (
-                f"自动停用：连接数 {len(items)} 超过单端口上限 {MAX_CONNECTIONS_PER_PORT}，"
-                f"时间 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}，请人工确认后手动启用"
+                f"auto protect pause: connections {len(items)} exceeded limit {MAX_CONNECTIONS_PER_PORT}; "
+                f"paused at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
             note = (user.note or "").strip()
             user.note = _append_auto_restore_marker(reason if not note else f"{reason}\n{note}", restore_at)
             host = user.line.public_ip if user.line else "-"
             port = user.listen_port or (user.line.get_port_by_protocol(user.protocol) if user.line else "-")
             detail = (
-                f"自动停用原因=单节点连接数超限；节点={host}:{port}；协议={user.protocol or '-'}；"
+                f"原因=单入站连接数超限；处理=暂停节点；"
+                f"节点={host}:{port}；协议={user.protocol or '-'}；"
                 f"用户={user.owner_name or user.username or '-'}；项目={user.project_name or '-'}；"
                 f"连接数={len(items)}；上限={MAX_CONNECTIONS_PER_PORT}；入站={tag}；"
+                f"自动恢复等待={AUTO_STOP_RESTORE_SECONDS}s；"
                 f"时间={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
-            add_operation_log(session, "system", "自动保护", "自动停用节点", detail, str(host))
-            disabled += 1
-            details.append(f"user {user_id} {tag}={len(items)}")
-        if disabled:
+            add_operation_log(session, "system", "自动保护", "自动暂停节点", detail, str(host))
+            paused += 1
+            details.append(f"user {user_id} {tag}={len(items)} paused")
+        if paused:
             session.commit()
             write_cfg(session)
             _hot_reload_config()
-        return disabled, ", ".join(details)
+        return paused, ", ".join(details)
     finally:
         session.close()
 
@@ -294,11 +298,11 @@ def _probe_connection_limits(timeout: float = 2.0) -> tuple[bool, str]:
     if not over_limit:
         return True, f"connection limits ok: max {MAX_CONNECTIONS_PER_PORT}"
 
-    disabled, disabled_details = _disable_over_limit_users(over_limit)
+    paused, paused_details = _auto_pause_over_limit_users(over_limit)
     details = ", ".join(f"{tag}={len(items)}" for tag, items in over_limit.items())
-    if disabled:
-        return True, f"connection limit exceeded; disabled {disabled}: {disabled_details}"
-    return True, f"connection limit exceeded; no users disabled: {details}"
+    if paused:
+        return True, f"connection limit exceeded; paused {paused}: {paused_details}"
+    return True, f"connection limit exceeded; no users paused: {details}"
 
 
 def enforce_connection_limits(timeout: float = 2.0) -> dict:
