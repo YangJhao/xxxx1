@@ -360,7 +360,7 @@ def _remote_users_from_managed_servers(session) -> list[dict]:
     def fetch_server(server: ManagedServer) -> list[dict]:
         server_rows = []
         try:
-            result = _remote_panel_get(server, "/api/users", timeout=6)
+            result = _remote_panel_get(server, "/api/users?local_only=1", timeout=6)
             for item in result.get("data") or []:
                 item = dict(item)
                 item["local_id"] = item.get("id")
@@ -1609,7 +1609,8 @@ def list_users():
                 item["traffic_available"] = True
                 item["traffic_source"] = "WireGuard 实时统计"
             rows.append(item)
-        if is_lite_mode() and not is_single_ip_mode():
+        local_only = str(request.args.get("local_only") or "").lower() in {"1", "true", "yes"}
+        if is_lite_mode() and not local_only:
             rows.extend(_remote_users_from_managed_servers(s))
         return jsonify({"ok": True, "data": rows})
     finally:
