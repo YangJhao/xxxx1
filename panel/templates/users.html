@@ -1410,8 +1410,10 @@ async function saveUser() {
   const selectedLineIds = lineValues.filter(value => !String(value).startsWith('server:') && !['all_servers', 'lite', 'all'].includes(String(value)));
   const hasRemoteTargets = serverIds.length > 0;
   const localCount = useLiteLine ? 1 : 0;
-  const requestedCount = Math.max(1, parseInt($('#userCount').val() || '1', 10));
-  const remoteCount = hasRemoteTargets ? Math.max(0, requestedCount - localCount) : 0;
+  const inputCount = Math.max(1, parseInt($('#userCount').val() || '1', 10));
+  const minimumTargetCount = localCount + serverIds.length;
+  const requestedCount = Math.max(inputCount, minimumTargetCount || 1);
+  const remoteCount = hasRemoteTargets ? Math.max(serverIds.length, requestedCount - localCount) : 0;
   const data = {
     username: proto === 'hysteria2' ? 'hy2' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential)),
     owner_name: $('#userOwner').val().trim() || (proto === 'hysteria2' ? '' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential))),

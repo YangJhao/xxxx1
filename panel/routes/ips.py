@@ -56,6 +56,12 @@ def _single_ip_public_ip() -> str:
         if value:
             return value
     try:
+        host = (request.host or "").split(":", 1)[0].strip()
+        if host and ipaddress.ip_address(host).is_global:
+            return host
+    except Exception:
+        pass
+    try:
         data = get_public_ip() or {}
         value = (data.get("ip") or "").strip()
         if value:

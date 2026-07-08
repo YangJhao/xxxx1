@@ -55,6 +55,11 @@ install_sing_box_optional() {
   if [[ -x sing-box/sing-box ]]; then
     return
   fi
+  if command -v sing-box >/dev/null 2>&1; then
+    cp "$(command -v sing-box)" sing-box/sing-box
+    chmod +x sing-box/sing-box
+    return
+  fi
   arch="$(uname -m)"
   case "$arch" in
     x86_64|amd64) sb_arch="amd64" ;;
@@ -70,7 +75,24 @@ install_sing_box_optional() {
     cp "/tmp/sing-box-${version}-linux-${sb_arch}/sing-box" sing-box/sing-box
     chmod +x sing-box/sing-box
   else
-    echo "[single-ip] sing-box download failed; panel still installs, but nodes need sing-box later."
+    echo "[single-ip] sing-box download failed."
+  fi
+  if [[ ! -x sing-box/sing-box ]]; then
+    echo "[single-ip] sing-box is required for inbound creation. Put sing-box at ${APP_DIR}/sing-box/sing-box and rerun this installer."
+    exit 3
+  fi
+}
+
+detect_public_ip() {
+  if [[ -n "$PUBLIC_IP" ]]; then
+    return
+  fi
+  PUBLIC_IP="$(curl -fsS --max-time 5 https://api.ipify.org || true)"
+  if [[ -z "$PUBLIC_IP" ]]; then
+    PUBLIC_IP="$(curl -fsS --max-time 5 https://ifconfig.me/ip || true)"
+  fi
+  if [[ -z "$PUBLIC_IP" ]]; then
+    PUBLIC_IP="$(hostname -I | awk '{print $1}')"
   fi
 }
 
@@ -122,5 +144,6 @@ ensure_swap
 install_packages
 copy_project
 install_sing_box_optional
+detect_public_ip
 install_service
 show_result

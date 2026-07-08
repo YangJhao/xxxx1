@@ -534,6 +534,13 @@ def _detect_public_ip() -> str:
         return env_ip
     if _is_public_ip(env_ip):
         return env_ip
+    if is_single_ip_mode():
+        try:
+            host_ip = (request.host or "").split(":", 1)[0].strip()
+            if _is_public_ip(host_ip):
+                return host_ip
+        except Exception:
+            pass
     for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
         try:
             with urllib.request.urlopen(url, timeout=5) as resp:

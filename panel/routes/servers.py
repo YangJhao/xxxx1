@@ -2,6 +2,7 @@
 import os
 import json
 import http.cookiejar
+import ipaddress
 import posixpath
 import re
 import shlex
@@ -29,7 +30,7 @@ IP_SPLIT_RE = re.compile(r"[\s,;，；]+")
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 INSTALL_SCRIPT = PROJECT_DIR / "install_single_ip.sh"
 TAR_EXCLUDES = {".git", "__pycache__", "data/backups", "control_center", "control_center_old_20260702-013419"}
-TAR_INCLUDE_ROOTS = ("panel", "install_lite.sh", "install_single_ip.sh", "restore_macvlans.py")
+TAR_INCLUDE_ROOTS = ("panel", "sing-box", "install_lite.sh", "install_single_ip.sh", "restore_macvlans.py")
 
 
 def _operator():
@@ -113,11 +114,27 @@ def _local_server_ips() -> set[str]:
     return ips
 
 
+def _is_public_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+        return not (addr.is_loopback or addr.is_private or addr.is_link_local or addr.is_multicast or addr.is_unspecified)
+    except Exception:
+        return False
+
+
+def _request_public_host() -> str:
+    host = (request.host or "").split(":", 1)[0].strip()
+    return host if _is_public_ip(host) else ""
+
+
 def _single_ip_public_ip() -> str:
     for key in ("IPWIN42_PUBLIC_IP", "PUBLIC_IP", "SERVER_PUBLIC_IP"):
         value = (os.environ.get(key) or "").strip()
         if value:
             return value
+    host = _request_public_host()
+    if host:
+        return host
     return ""
 
 
