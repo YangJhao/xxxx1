@@ -28,7 +28,7 @@
   <div class="user-toolbar">
     <div class="toolbar-actions">
       <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#serverModal" id="btnAddServer"><i class="bi bi-plus-lg"></i> 批量添加服务器</button>
-      <button class="btn btn-warning" id="btnInstallSelected"><i class="bi bi-cloud-arrow-up"></i> 一键安装42轻量</button>
+      <button class="btn btn-warning" id="btnInstallSelected"><i class="bi bi-cloud-arrow-up"></i> 一键安装单公网轻量</button>
       <button class="btn btn-primary" id="btnUpgradeSelected"><i class="bi bi-cloud-arrow-down"></i> 一键升级</button>
       <button class="btn btn-soft" id="btnDetectLiteSelected"><i class="bi bi-search"></i> 检测轻量</button>
       <button class="btn btn-soft" id="btnTestSelected"><i class="bi bi-wifi"></i> 测试连接</button>
@@ -61,7 +61,7 @@
     </div>
     <div>
       <span>安装方式</span>
-      <strong>上传本地 install_lite.sh 后执行</strong>
+      <strong>上传本地 install_single_ip.sh 后执行，面板端口 18080</strong>
     </div>
   </div>
 
@@ -449,7 +449,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btnInstallSelected').addEventListener('click', () => {
-    if (!confirm('确定对选中的服务器执行一键安装 42 轻量？')) return;
+    if (!confirm('确定对选中的服务器执行一键安装单公网轻量版？')) return;
     runServerAction('/api/servers/install', selectedIds(), '安装任务已执行', {
       selector: '#btnInstallSelected',
       loadingText: '安装中...',

@@ -10,7 +10,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent                      # .../panel
 PROJECT_DIR = BASE_DIR.parent                                      # .../42IPwin
-APP_VERSION = "1.0.0.6"
+APP_VERSION = "1.0.0.7"
 IS_WINDOWS = platform.system().lower() == "windows"
 
 # ===== 目录 =====
@@ -45,7 +45,15 @@ LOG_LEVEL = "INFO"
 
 
 def is_lite_mode() -> bool:
-    return os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
+    return (
+        os.environ.get("IPWIN42_LITE") == "1"
+        or os.environ.get("42IPWIN_LITE") == "1"
+        or is_single_ip_mode()
+    )
+
+
+def is_single_ip_mode() -> bool:
+    return os.environ.get("IPWIN42_SINGLE_IP") == "1" or os.environ.get("42IPWIN_SINGLE_IP") == "1"
 
 
 # ---- Panel 运行配置（持久化）----

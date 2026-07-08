@@ -26,9 +26,9 @@ bp = Blueprint("servers", __name__, url_prefix="/api/servers")
 
 IP_SPLIT_RE = re.compile(r"[\s,;，；]+")
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-INSTALL_SCRIPT = PROJECT_DIR / "install_lite.sh"
+INSTALL_SCRIPT = PROJECT_DIR / "install_single_ip.sh"
 TAR_EXCLUDES = {".git", "__pycache__", "data/backups", "control_center", "control_center_old_20260702-013419"}
-TAR_INCLUDE_ROOTS = ("panel", "install_lite.sh", "restore_macvlans.py")
+TAR_INCLUDE_ROOTS = ("panel", "install_lite.sh", "install_single_ip.sh", "restore_macvlans.py")
 
 
 def _operator():
@@ -164,8 +164,8 @@ def _detect_lite_install(row) -> tuple[str, str, str, dict]:
         try:
             code, out, err = _run(
                 ssh,
-                "test -f /opt/42IPwin/panel/app.py && "
-                "systemctl is-active 42ipwin 2>/dev/null || true; "
+                "(test -f /opt/42IPwin-single/panel/app.py || test -f /opt/42IPwin/panel/app.py) && "
+                "(systemctl is-active 42ipwin-single 2>/dev/null || systemctl is-active 42ipwin 2>/dev/null || true); "
                 "curl -sS -o /dev/null -w 'HTTP:%{http_code}' --max-time 6 http://127.0.0.1:18080/login || true",
                 timeout=30,
             )
@@ -499,7 +499,7 @@ def _install_one(row):
             f"rm -rf {shlex.quote(remote_dir)} && mkdir -p {shlex.quote(remote_dir)} && "
             f"tar -xzf {shlex.quote(remote_archive)} -C {shlex.quote(remote_dir)} && "
             f"cd {shlex.quote(remote_dir)} && "
-            f"DEBIAN_FRONTEND=noninteractive PANEL_PORT=18080 bash install_lite.sh"
+            f"DEBIAN_FRONTEND=noninteractive PANEL_PORT=18080 bash install_single_ip.sh"
         )
         code, out, err = _run(ssh, command, timeout=1200)
         if code != 0:
@@ -539,9 +539,13 @@ print(json.dumps(result, ensure_ascii=False))
 if not result.get('ok'):
     raise SystemExit(result.get('error') or 'upgrade failed')
 PY
-systemctl restart 42ipwin
+if systemctl list-unit-files 42ipwin-single.service >/dev/null 2>&1; then
+  systemctl restart 42ipwin-single
+else
+  systemctl restart 42ipwin
+fi
 sleep 2
-systemctl is-active 42ipwin
+systemctl is-active 42ipwin-single 2>/dev/null || systemctl is-active 42ipwin
 """
         code, out, err = _run(ssh, command, timeout=300)
         if code != 0:

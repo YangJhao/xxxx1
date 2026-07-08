@@ -15,7 +15,7 @@ import psutil
 from flask import Blueprint, jsonify, request
 from sqlalchemy.orm import selectinload
 
-from config import DATA_DIR
+from config import DATA_DIR, is_single_ip_mode
 from models import Line, get_session
 from routes.auth import login_required
 from services import proxy_manager
@@ -48,6 +48,52 @@ HOST_MACVLAN_STATE_FILE = Path(DATA_DIR) / "macvlan_current_211.230.223.67.json"
 NOTE_SEP = "||"
 ETHERNET_4_LABEL = "\u4ee5\u592a\u7f51 4"
 ETHERNET_5_LABEL = "\u4ee5\u592a\u7f51 5"
+
+
+def _single_ip_public_ip() -> str:
+    for key in ("IPWIN42_PUBLIC_IP", "PUBLIC_IP", "SERVER_PUBLIC_IP"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    try:
+        data = get_public_ip() or {}
+        value = (data.get("ip") or "").strip()
+        if value:
+            return value
+    except Exception:
+        pass
+    return ""
+
+
+def _ensure_single_ip_line(session) -> Line:
+    public_ip = _single_ip_public_ip()
+    if not public_ip:
+        line = session.query(Line).order_by(Line.id).first()
+        if line:
+            return line
+        raise ValueError("无法自动获取本机公网 IP，请设置 IPWIN42_PUBLIC_IP")
+    line = session.query(Line).filter(Line.public_ip == public_ip).first()
+    if line:
+        line.name = line.name or "本机公网IP"
+        line.status = 1
+        return line
+    used_ports = {int(row[0]) for row in session.query(Line.socks_port).all() if row[0]}
+    socks_port = 10801
+    while socks_port in used_ports:
+        socks_port += 1
+    line = Line(
+        name="本机公网IP",
+        public_ip=public_ip,
+        internal_ip="0.0.0.0",
+        socks_port=socks_port,
+        http_port=socks_port + 10,
+        ss_port=socks_port + 20,
+        status=1,
+        note="single-ip-auto",
+    )
+    session.add(line)
+    session.flush()
+    return line
 
 
 def _line_note(interface: str, **meta) -> str:
@@ -1730,6 +1776,11 @@ def auto_internal_ips():
 def list_lines():
     s = get_session()
     try:
+        if is_single_ip_mode():
+            line = _ensure_single_ip_line(s)
+            s.commit()
+            s.refresh(line)
+            return jsonify({"ok": True, "data": [line.to_dict()]})
         live = request.args.get("live") == "1"
         if live:
             detected = _detect_local_ips()

@@ -3,7 +3,7 @@ from functools import wraps
 
 from flask import Blueprint, jsonify, redirect, render_template, request, session, url_for
 
-from config import is_lite_mode
+from config import is_lite_mode, is_single_ip_mode
 from models import AdminUser, NodeCustomer, OperationLog, Plan, Project, ProxyUser, get_session
 
 bp = Blueprint("auth", __name__)
@@ -47,7 +47,9 @@ def current_permissions() -> set[str]:
         keys = set(ALL_PERMISSION_KEYS)
     else:
         keys = set(_split_permissions(permissions))
-    if is_lite_mode():
+    if is_single_ip_mode():
+        keys -= {"lines", "customers", "pve"}
+    elif is_lite_mode():
         keys -= {"lines", "customers", "pve"}
     return keys
 

@@ -23,10 +23,12 @@ from flask import Blueprint, Response, jsonify, request, session
 from sqlalchemy.orm import joinedload
 
 try:
-    from config import is_lite_mode
+    from config import is_lite_mode, is_single_ip_mode
 except ImportError:
     def is_lite_mode() -> bool:
         return os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
+    def is_single_ip_mode() -> bool:
+        return os.environ.get("IPWIN42_SINGLE_IP") == "1" or os.environ.get("42IPWIN_SINGLE_IP") == "1"
 from models import Line, ManagedServer, PROTOCOL_TYPES, ProxyUser, SS_METHODS, get_session
 from routes.auth import login_required
 try:
@@ -528,6 +530,8 @@ def _is_public_ip(ip: str) -> bool:
 
 def _detect_public_ip() -> str:
     env_ip = (os.environ.get("IPWIN42_PUBLIC_IP") or os.environ.get("PUBLIC_IP") or "").strip()
+    if is_single_ip_mode() and env_ip:
+        return env_ip
     if _is_public_ip(env_ip):
         return env_ip
     for url in ("https://api.ipify.org", "https://ifconfig.me/ip"):
@@ -576,6 +580,16 @@ def _ensure_lite_line(session) -> Line:
     session.add(line)
     session.flush()
     return line
+
+
+def ensure_lite_line() -> dict:
+    s = get_session()
+    try:
+        line = _ensure_lite_line(s)
+        s.commit()
+        return line.to_dict()
+    finally:
+        s.close()
 
 
 def _normalize_protocol(value: str) -> str:
@@ -1272,8 +1286,10 @@ def _create_user_v3():
     protocol = _normalize_protocol(data.get("protocol"))
     ss_method = (data.get("ss_method") or "aes-256-gcm").strip()
     line_id = data.get("line_id") or data.get("ip") or data.get("ip_select") or ("lite" if is_lite_mode() else "all")
+    if is_single_ip_mode():
+        line_id = "lite"
     line_ids = data.get("line_ids") or []
-    server_ids = data.get("server_ids") or []
+    server_ids = [] if is_single_ip_mode() else (data.get("server_ids") or [])
     expire_at_str = data.get("expire_at") or ""
     speed_limit = _normalize_speed_limit(data.get("speed_limit"), DEFAULT_SPEED_LIMIT)
     traffic_limit = _normalize_traffic_limit(data.get("traffic_limit"), DEFAULT_TRAFFIC_LIMIT)
@@ -1586,7 +1602,7 @@ def list_users():
                 item["traffic_available"] = True
                 item["traffic_source"] = "WireGuard 实时统计"
             rows.append(item)
-        if is_lite_mode():
+        if is_lite_mode() and not is_single_ip_mode():
             rows.extend(_remote_users_from_managed_servers(s))
         return jsonify({"ok": True, "data": rows})
     finally:

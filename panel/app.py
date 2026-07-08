@@ -11,7 +11,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 from flask import Flask, redirect, render_template, request, session, url_for
 
-from config import APP_VERSION, PANEL_PORT, PANEL_SECRET_KEY, get_panel_bind_ip, is_lite_mode
+from config import APP_VERSION, PANEL_PORT, PANEL_SECRET_KEY, get_panel_bind_ip, is_lite_mode, is_single_ip_mode
 from models import init_db
 from routes.auth import bp as auth_bp
 from routes.auth import login_required
@@ -28,6 +28,7 @@ from services import protection_manager, proxy_manager
 from services.traffic_collector import start_daemon as start_collector
 
 LITE_NAV_KEYS = {"dashboard", "nodes", "group_control", "logs", "settings", "admin_users"}
+SINGLE_IP_NAV_KEYS = {"dashboard", "nodes", "group_control", "logs", "settings", "admin_users"}
 
 
 def create_app() -> Flask:
@@ -44,11 +45,14 @@ def create_app() -> Flask:
     def inject_version():
         permissions = current_permissions()
         nav_items = [item for item in PERMISSION_ITEMS if item["key"] in permissions]
-        if is_lite_mode():
+        if is_single_ip_mode():
+            nav_items = [item for item in nav_items if item["key"] in SINGLE_IP_NAV_KEYS]
+        elif is_lite_mode():
             nav_items = [item for item in nav_items if item["key"] in LITE_NAV_KEYS]
         return {
             "app_version": APP_VERSION,
             "is_lite_mode": is_lite_mode(),
+            "is_single_ip_mode": is_single_ip_mode(),
             "permission_items": PERMISSION_ITEMS,
             "current_permissions": permissions,
             "nav_items": nav_items,
@@ -148,11 +152,20 @@ def main():
     parser.add_argument("--init", action="store_true", help="初始化数据库")
     parser.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--lite", action="store_true", help="轻量模式：启动 sing-box，关闭后台流量采集")
+    parser.add_argument("--single-ip", action="store_true", help="单公网 IP 模式：只使用本机出口 IP 创建节点")
     parser.add_argument("--no-collector", action="store_true", help="不启动后台流量采集")
+    parser.add_argument("--no-protection", action="store_true", help="不启动全局 sing-box 保护轮询")
     parser.add_argument("--singbox-watchdog", action="store_true", help="后台看护 sing-box，异常退出后自动拉起")
     args = parser.parse_args()
-    lite_mode = args.lite or os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
+    single_ip_mode = args.single_ip or os.environ.get("IPWIN42_SINGLE_IP") == "1" or os.environ.get("42IPWIN_SINGLE_IP") == "1"
+    lite_mode = args.lite or single_ip_mode or os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
+    if single_ip_mode:
+        os.environ["IPWIN42_SINGLE_IP"] = "1"
+        os.environ["IPWIN42_LITE"] = "1"
+    elif lite_mode:
+        os.environ["IPWIN42_LITE"] = "1"
     no_collector = args.no_collector or os.environ.get("IPWIN42_NO_COLLECTOR") == "1" or os.environ.get("42IPWIN_NO_COLLECTOR") == "1"
+    no_protection = args.no_protection or single_ip_mode or os.environ.get("IPWIN42_NO_PROTECTION") == "1" or os.environ.get("42IPWIN_NO_PROTECTION") == "1"
     singbox_watchdog = os.environ.get("IPWIN42_SINGBOX_WATCHDOG", os.environ.get("42IPWIN_SINGBOX_WATCHDOG", "0")) == "1"
     singbox_watchdog = singbox_watchdog or args.singbox_watchdog
 
@@ -162,6 +175,12 @@ def main():
         return
 
     init_db()
+    if single_ip_mode:
+        try:
+            from routes.users import ensure_lite_line
+            ensure_lite_line()
+        except Exception as exc:
+            print(f"[single-ip] default line init failed: {exc}")
     if singbox_watchdog:
         try:
             proxy_manager.ensure_running()
@@ -178,17 +197,18 @@ def main():
                 threading.Event().wait(10)
         threading.Thread(target=keep_singbox_alive, daemon=True).start()
 
-    def trim_singbox_connections():
-        while True:
-            try:
-                result = proxy_manager.enforce_connection_limits()
-                message = result.get("message") or ""
-                if "exceeded" in message or "trimmed" in message:
-                    print(f"[sing-box limiter] {message}")
-            except Exception as exc:
-                print(f"[sing-box limiter] {exc}")
-            threading.Event().wait(5)
-    threading.Thread(target=trim_singbox_connections, daemon=True).start()
+    if not no_protection:
+        def trim_singbox_connections():
+            while True:
+                try:
+                    result = proxy_manager.enforce_connection_limits()
+                    message = result.get("message") or ""
+                    if "exceeded" in message or "trimmed" in message:
+                        print(f"[sing-box limiter] {message}")
+                except Exception as exc:
+                    print(f"[sing-box limiter] {exc}")
+                threading.Event().wait(5)
+        threading.Thread(target=trim_singbox_connections, daemon=True).start()
 
     def restore_auto_stopped_nodes():
         while True:
@@ -202,16 +222,17 @@ def main():
             threading.Event().wait(10)
     threading.Thread(target=restore_auto_stopped_nodes, daemon=True).start()
 
-    def protect_runtime_resources():
-        while True:
-            try:
-                result = protection_manager.enforce_runtime_protection()
-                for message in result.get("messages") or []:
-                    print(f"[runtime protection] {message}")
-            except Exception as exc:
-                print(f"[runtime protection] {exc}")
-            threading.Event().wait(protection_manager.NODE_SAMPLE_SECONDS)
-    threading.Thread(target=protect_runtime_resources, daemon=True).start()
+    if not no_protection:
+        def protect_runtime_resources():
+            while True:
+                try:
+                    result = protection_manager.enforce_runtime_protection()
+                    for message in result.get("messages") or []:
+                        print(f"[runtime protection] {message}")
+                except Exception as exc:
+                    print(f"[runtime protection] {exc}")
+                threading.Event().wait(protection_manager.NODE_SAMPLE_SECONDS)
+        threading.Thread(target=protect_runtime_resources, daemon=True).start()
 
     if no_collector:
         print("[lite] 后台流量采集已关闭，sing-box 保持在线")
@@ -230,7 +251,7 @@ def main():
     print(f"  访问地址: {url}")
     print(f"  监听 IP: {bind_ip} (0.0.0.0=所有网卡)")
     print("  代理内核: sing-box")
-    print(f"  运行模式: {'lite' if lite_mode else 'full'}")
+    print(f"  运行模式: {'single-ip' if single_ip_mode else 'lite' if lite_mode else 'full'}")
     print(f"  sing-box 看护: {'on' if singbox_watchdog else 'off'}")
     print("=" * 60)
 
