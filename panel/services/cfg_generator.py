@@ -15,6 +15,7 @@ from config import SING_BOX_CERT, SING_BOX_CFG, SING_BOX_KEY, SING_BOX_LOG
 from models import Line, ProxyUser, get_session
 
 SING_BOX_LOG_LEVEL = os.environ.get("IPWIN42_SINGBOX_LOG_LEVEL", "warn").strip().lower() or "warn"
+DNS_SERVER = (os.environ.get("IPWIN42_DNS_SERVER") or "tcp://168.126.63.1:53").strip() or "tcp://168.126.63.1:53"
 
 LINUX_PARENT_SEGMENTS = {
     "ens2": 2,
@@ -474,6 +475,7 @@ def generate_cfg(session=None) -> str:
                     "secret": "",
                 }
             },
+            "dns": {"servers": [{"tag": "dns-direct", "address": DNS_SERVER}], "strategy": "ipv4_only"},
             "inbounds": [],
             "outbounds": [
                 {"type": "direct", "tag": "direct"},

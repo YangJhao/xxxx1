@@ -112,11 +112,21 @@ def clear_limit(user_id: int) -> dict:
         if not _tc_available():
             return {"ok": False, "output": "Linux tc/ip 命令不可用，无法清理限速"}
         mark = _linux_mark(user_id)
+        mark_hex = f"0x{int(mark):x}/0xffffffff"
+        iface = _linux_default_iface() or ""
+        tc_cleanup = "true"
+        if iface:
+            prio = 1000 + int(user_id)
+            classid = f"1:{1000 + int(user_id)}"
+            tc_cleanup = (
+                f"tc filter del dev {iface} protocol ip parent 1: prio {prio} 2>/dev/null || true\n"
+                f"tc class del dev {iface} classid {classid} 2>/dev/null || true"
+            )
         script = "\n".join([
-            f"iptables -t mangle -D OUTPUT -m mark --mark {mark} -j MARK --set-mark 0 2>/dev/null || true",
-            f"iptables -t mangle -D OUTPUT -m mark --mark {mark} -j RETURN 2>/dev/null || true",
-            f"iptables -t mangle -D OUTPUT -p tcp --sport 1:65535 -m mark --mark {mark} -j MARK --set-mark 0 2>/dev/null || true",
-            f"iptables -t mangle -D OUTPUT -p udp --sport 1:65535 -m mark --mark {mark} -j MARK --set-mark 0 2>/dev/null || true",
+            f"while iptables -t mangle -S OUTPUT | grep -q -- '--set-xmark {mark_hex}'; do",
+            f"  iptables -t mangle -S OUTPUT | grep -- '--set-xmark {mark_hex}' | head -n 1 | sed 's/^-A /-D /' | xargs -r iptables -t mangle",
+            "done",
+            tc_cleanup,
         ])
         ok, output = _run_linux_limit_script(script)
         return {"ok": ok, "output": output}
@@ -181,6 +191,27 @@ def apply_limit_bps(user, port: int, protocol: str | None, bps: int | None) -> d
 def apply_limit(user, port: int, protocol: str | None = None) -> dict:
     bps = parse_speed_to_bps(getattr(user, "speed_limit", None))
     return apply_limit_bps(user, port, protocol, bps)
+
+
+def limit_status(user, port: int, protocol: str | None = None) -> dict:
+    bps = parse_speed_to_bps(getattr(user, "speed_limit", None))
+    if not bps:
+        return {"ok": True, "limited": False, "bps": None, "output": ""}
+    if os.name == "nt":
+        return {"ok": True, "limited": True, "bps": bps, "output": "configured"}
+    if not _tc_available():
+        return {"ok": False, "limited": False, "bps": bps, "output": "Linux tc/ip unavailable"}
+    mark_hex = f"0x{int(_linux_mark(user.id)):x}/0xffffffff"
+    ok, output = _run_cmd(
+        ["sh", "-c", f"iptables -t mangle -S OUTPUT | grep -q -- '--set-xmark {mark_hex}'"],
+        timeout=5,
+    )
+    return {
+        "ok": ok,
+        "limited": ok,
+        "bps": bps,
+        "output": output or ("configured" if ok else "limit rule not found"),
+    }
 
 
 def sync_limits(session) -> list[dict]:

@@ -45,7 +45,7 @@ except ImportError:
         return None, note
 from services.cfg_generator import parse_size_to_bytes, write_cfg
 from services.fast_speed import fast_socks5_speed
-from services.limit_manager import apply_limit, clear_limit, parse_speed_to_bps, sync_limits
+from services.limit_manager import apply_limit, clear_limit, limit_status, parse_speed_to_bps, sync_limits
 try:
     from services.traffic_collector import collect_once, snapshot_connections_status
 except ImportError:
@@ -1237,7 +1237,7 @@ def _socks5_udp_associate_test(host: str, port: int, username: str, password: st
                 if relay_host in {"0.0.0.0", "::"}:
                     relay_host = host
 
-                packet = b"\x00\x00\x00\x01" + socket.inet_aton("1.1.1.1") + struct.pack("!H", 53) + _dns_query_packet()
+                packet = b"\x00\x00\x00\x01" + socket.inet_aton("168.126.63.1") + struct.pack("!H", 53) + _dns_query_packet()
                 udp.sendto(packet, (relay_host, relay_port))
                 data, _ = udp.recvfrom(4096)
                 if len(data) > 10 and data[:3] == b"\x00\x00\x00":
@@ -1543,7 +1543,7 @@ def _limit_info_for_user(user: ProxyUser, measured_mbps=None) -> dict:
     if not bps:
         return {"enabled": False, "raw": user.speed_limit or "", "message": "未设置限速"}
     limit_mbps = round(bps / 1000 / 1000, 2)
-    policy = apply_limit(user, user.listen_port or user.line.get_port_by_protocol(user.protocol), user.protocol) if user.line else {}
+    policy = limit_status(user, user.listen_port or user.line.get_port_by_protocol(user.protocol), user.protocol) if user.line else {}
     bypass_hint = bool(measured_mbps and measured_mbps > limit_mbps * 1.3)
     return {
         "enabled": True,

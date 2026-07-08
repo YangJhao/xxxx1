@@ -29,6 +29,7 @@ from services.cfg_generator import (
 INSTANCE_ROOT = Path(os.environ.get("IPWIN42_INBOUND_INSTANCE_DIR") or (PROJECT_DIR / "sing-box" / "inbound-instances"))
 SYSTEMD_DIR = Path("/etc/systemd/system")
 LOG_LEVEL = (os.environ.get("IPWIN42_SINGBOX_LOG_LEVEL") or "warn").strip().lower() or "warn"
+DNS_SERVER = (os.environ.get("IPWIN42_DNS_SERVER") or "tcp://168.126.63.1:53").strip() or "tcp://168.126.63.1:53"
 
 
 def is_instance_user(user: ProxyUser | None) -> bool:
@@ -183,6 +184,7 @@ def write_config(user: ProxyUser) -> tuple[str, bool]:
             "output": str(paths["log"]),
             "timestamp": True,
         },
+        "dns": {"servers": [{"tag": "dns-direct", "address": DNS_SERVER}], "strategy": "ipv4_only"},
         "inbounds": [inbound],
         "outbounds": [_outbound(user, bind_ip), {"type": "block", "tag": "block"}],
         "route": {"rules": [{"inbound": [inbound["tag"]], "outbound": "out"}]},

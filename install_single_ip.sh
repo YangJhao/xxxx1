@@ -39,6 +39,16 @@ install_packages() {
     python3-paramiko curl iproute2 iptables procps rsync ca-certificates openssl
 }
 
+apply_network_tuning() {
+  cat >/etc/sysctl.d/42ipwin-udp.conf <<'EOF'
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+EOF
+  sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/42ipwin-udp.conf || true
+}
+
 copy_project() {
   mkdir -p "$APP_DIR"
   if [[ ! -f "./panel/app.py" ]]; then
@@ -145,6 +155,7 @@ show_result() {
 
 ensure_swap
 install_packages
+apply_network_tuning
 copy_project
 install_sing_box_optional
 detect_public_ip
