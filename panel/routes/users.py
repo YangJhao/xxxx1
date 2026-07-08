@@ -35,6 +35,7 @@ except ModuleNotFoundError:
     def add_operation_log(*args, **kwargs):
         return None
 from services import proxy_manager
+from services import inbound_instance_manager
 try:
     from services.proxy_manager import _pop_auto_restore_marker
 except ImportError:
@@ -675,12 +676,58 @@ def _reload_proxy(session=None):
     hot = proxy_manager.reload_config_no_restart(session)
     if hot.get("ok"):
         return hot
-    pid = proxy_manager.restart_config()
     return {
-        "ok": True,
-        "restarted": True,
-        "pid": pid,
-        "message": f"hot reload failed; restarted sing-box: {hot.get('message') or 'unknown'}",
+        "ok": False,
+        "restarted": False,
+        "pid": hot.get("pid"),
+        "message": f"hot reload failed; sing-box was not restarted: {hot.get('message') or 'unknown'}",
+    }
+
+
+def _is_inbound_instance(user: ProxyUser | None) -> bool:
+    return inbound_instance_manager.is_instance_user(user)
+
+
+def _apply_runtime_for_users(session, users: list[ProxyUser], *, apply_legacy: bool = True) -> dict:
+    instance_users = [user for user in users if _is_inbound_instance(user)]
+    legacy_users = [user for user in users if not _is_inbound_instance(user)]
+    if hasattr(inbound_instance_manager, "start_users"):
+        instance = inbound_instance_manager.start_users(instance_users)
+    else:
+        instance = [inbound_instance_manager.apply_user(user) for user in instance_users]
+    for item, user in zip(instance, instance_users):
+        item.setdefault("user_id", user.id)
+    legacy = _reload_proxy(session) if apply_legacy and legacy_users else {}
+    return {
+        "ok": all(item.get("ok", True) for item in instance) and bool(legacy.get("ok", True)),
+        "instance": instance,
+        "legacy": legacy,
+        "applied": all(item.get("ok", True) for item in instance) and bool(legacy.get("ok", True)),
+        "restarted": any(item.get("restarted") for item in instance) or bool(legacy.get("restarted")),
+    }
+
+
+def _stop_runtime_for_users(session, users: list[ProxyUser], *, remove: bool = False, apply_legacy: bool = True) -> dict:
+    instance_users = [user for user in users if _is_inbound_instance(user)]
+    legacy_users = [user for user in users if not _is_inbound_instance(user)]
+    if remove and hasattr(inbound_instance_manager, "remove_users"):
+        instance = inbound_instance_manager.remove_users(instance_users)
+    elif not remove and hasattr(inbound_instance_manager, "stop_users"):
+        instance = inbound_instance_manager.stop_users(instance_users)
+    else:
+        instance = [
+            inbound_instance_manager.remove_user(user) if remove else inbound_instance_manager.stop_user(user)
+            for user in instance_users
+        ]
+    for item, user in zip(instance, instance_users):
+        item.setdefault("user_id", user.id)
+    legacy = _reload_proxy(session) if apply_legacy and legacy_users else {}
+    return {
+        "ok": all(item.get("ok", True) for item in instance) and bool(legacy.get("ok", True)),
+        "instance": instance,
+        "legacy": legacy,
+        "removed": remove,
+        "restarted": any(item.get("restarted") for item in instance) or bool(legacy.get("restarted")),
     }
 
 
@@ -1024,29 +1071,12 @@ def _ensure_created_applied(users: list[ProxyUser]) -> dict:
     status = _created_apply_status(users)
     if status["applied"]:
         return status
-    missing_before = list(status.get("missing_ports") or [])
-    try:
-        pid = proxy_manager.restart_config()
-        time.sleep(1.2)
-        status = _created_apply_status(users)
-        status["restarted"] = True
-        status["pid"] = pid
-        if status["applied"]:
-            status["message"] = (
-                "hot reload did not expose every listener; restarted sing-box and verified ports: "
-                + ", ".join(map(str, missing_before[:8]))
-            )
-        else:
-            status["message"] = (
-                "ports still not listening after sing-box restart: "
-                + ", ".join(map(str, (status.get("missing_ports") or [])[:8]))
-            )
-        return status
-    except Exception as exc:
-        status["applied"] = False
-        status["restarted"] = False
-        status["message"] = f"restart failed after listener check: {exc}"
-        return status
+    status["restarted"] = False
+    status["message"] = (
+        "ports not listening after hot reload; sing-box was not restarted: "
+        + ", ".join(map(str, (status.get("missing_ports") or [])[:8]))
+    )
+    return status
 
 
 def _interface_for_line(line: Line) -> str | None:
@@ -1401,6 +1431,7 @@ def _create_user_v3():
                 project_name=project_name or None,
                 speed_limit=speed_limit or None,
                 traffic_limit=traffic_limit or None,
+                runtime_mode="inbound_instance" if protocol != "wireguard" else None,
                 expire_at=expire_at,
                 note=note,
             )
@@ -1437,10 +1468,15 @@ def _create_user_v3():
             if protocol == "wireguard":
                 apply_status = wireguard_manager.reload_service(s)
             else:
-                _reload_proxy(s)
-                apply_status = _ensure_created_applied(created)
+                apply_status = _apply_runtime_for_users(s, created)
         except Exception as exc:
             created_ids = [user.id for user in created]
+            rollback_status = {}
+            if protocol != "wireguard":
+                try:
+                    rollback_status = _stop_runtime_for_users(s, created, remove=True)
+                except Exception:
+                    rollback_status = {}
             for user in created:
                 s.delete(user)
             s.commit()
@@ -1449,13 +1485,8 @@ def _create_user_v3():
                     wireguard_manager.reload_service(s)
                 except Exception:
                     pass
-            else:
-                try:
-                    _reload_proxy(s)
-                except Exception:
-                    pass
             detail = str(exc)
-            return jsonify({"ok": False, "error": f"自动应用配置失败，已回滚本次创建：{detail}", "data": {"rolled_back_ids": created_ids}}), 400
+            return jsonify({"ok": False, "error": f"自动应用配置失败，已回滚本次创建：{detail}", "data": {"rolled_back_ids": created_ids, "rollback_status": rollback_status}}), 400
         limited_ids = [u.id for u in created if parse_speed_to_bps(u.speed_limit)]
         _apply_user_limits_background(limited_ids)
         log_details = [_format_log_user_detail(item) for item in remote_created]
@@ -1513,18 +1544,16 @@ def _limit_info_for_user(user: ProxyUser, measured_mbps=None) -> dict:
 def list_users():
     s = get_session()
     try:
-        try:
-            collect_once()
-        except Exception:
-            pass
-        connection_status = snapshot_connections_status()
+        connection_status = snapshot_connections_status(refresh=False, max_age=30)
         connection_snapshot = connection_status.get("data") or {}
+        system_connection_users = connection_status.get("system_connection_users") or set()
         port_counter_users = connection_status.get("port_counter_users") or set()
         wg_totals = wireguard_manager.transfer_snapshot(s)
         expired = _apply_expire_limits(s)
         traffic_disabled = _apply_traffic_limits(s)
         if expired or traffic_disabled:
-            _reload_proxy(s)
+            changed_users = s.query(ProxyUser).filter(ProxyUser.username.in_(expired + traffic_disabled)).all()
+            _stop_runtime_for_users(s, changed_users, remove=False)
         q = s.query(ProxyUser)
         line_id = request.args.get("line_id", type=int)
         if line_id:
@@ -1539,8 +1568,12 @@ def list_users():
             item["live_download"] = int(live.get("download") or 0)
             item["traffic_available"] = bool(connection_status.get("ok"))
             if connection_status.get("ok"):
-                if user.id in port_counter_users:
-                    item["traffic_source"] = "系统端口累计统计"
+                if user.id in system_connection_users and user.id in port_counter_users:
+                    item["traffic_source"] = "系统端口连接统计 + 端口累计流量"
+                elif user.id in system_connection_users:
+                    item["traffic_source"] = "系统端口连接统计 + sing-box 实时统计"
+                elif user.id in port_counter_users:
+                    item["traffic_source"] = "端口累计流量 + sing-box 连接统计"
                 else:
                     item["traffic_source"] = "sing-box 实时连接统计"
             else:
@@ -1576,7 +1609,8 @@ def sync_users():
         disabled = _apply_traffic_limits(s)
         limit_results = sync_limits(s)
         if expired or disabled:
-            _reload_proxy(s)
+            changed_users = s.query(ProxyUser).filter(ProxyUser.username.in_(expired + disabled)).all()
+            _stop_runtime_for_users(s, changed_users, remove=False)
         return jsonify({"ok": True, "data": {"traffic": traffic, "expired": expired, "disabled": disabled, "limits": limit_results}})
     finally:
         s.close()
@@ -1591,12 +1625,12 @@ def clean_expired():
         users = s.query(ProxyUser).filter(ProxyUser.expire_at.isnot(None), ProxyUser.expire_at < now).all()
         count = len(users)
         limit_ids = [user.id for user in users]
+        apply_status = _stop_runtime_for_users(s, users, remove=True)
         for user in users:
             s.delete(user)
         s.commit()
-        _reload_proxy(s)
         _clear_user_limits_background(limit_ids)
-        return jsonify({"ok": True, "data": {"deleted": count, "limit_clear_queued": len(limit_ids)}})
+        return jsonify({"ok": True, "data": {"deleted": count, "limit_clear_queued": len(limit_ids), "apply_status": apply_status}})
     finally:
         s.close()
 
@@ -1624,12 +1658,11 @@ def batch_delete():
         count = len(users)
         limit_ids = [user.id for user in users]
         local_log_details = [_format_log_user_detail(user) for user in users]
+        apply_status = _stop_runtime_for_users(s, users, remove=True) if users else {}
         for user in users:
             s.delete(user)
         s.commit()
-        apply_status = {}
         if users:
-            apply_status = _reload_proxy(s)
             _clear_user_limits_background(limit_ids)
 
         errors = []
@@ -1694,10 +1727,12 @@ def batch_stop():
                 user.status = 0
                 changed.append(user.id)
         s.commit()
+        apply_status = {}
         if changed:
             _clear_user_limits_background(changed)
-            _reload_proxy(s)
-        return jsonify({"ok": True, "data": {"updated": len(changed), "matched": len(users), "limit_clear_queued": len(changed)}})
+            changed_users = [user for user in users if user.id in changed]
+            apply_status = _stop_runtime_for_users(s, changed_users, remove=False)
+        return jsonify({"ok": True, "data": {"updated": len(changed), "matched": len(users), "limit_clear_queued": len(changed), "apply_status": apply_status}})
     finally:
         s.close()
 
@@ -1807,10 +1842,10 @@ def batch_edit_limits():
             if user.status and parse_speed_to_bps(user.speed_limit):
                 limit_ids.append(user.id)
         s.commit()
-        _reload_proxy(s)
+        apply_status = _apply_runtime_for_users(s, [user for user in users if user.status])
         _clear_user_limits_background(clear_ids)
         _apply_user_limits_background(limit_ids)
-        return jsonify({"ok": True, "data": {"updated": len(users), "updated_ids": ids, "limit_queued": len(limit_ids)}})
+        return jsonify({"ok": True, "data": {"updated": len(users), "updated_ids": ids, "limit_queued": len(limit_ids), "apply_status": apply_status}})
     finally:
         s.close()
 
@@ -1848,9 +1883,9 @@ def batch_renew():
         s.commit()
         for user in users:
             s.refresh(user)
-        _reload_proxy(s)
+        apply_status = _apply_runtime_for_users(s, [user for user in users if user.status])
         _apply_user_limits_background(limit_ids)
-        return jsonify({"ok": True, "data": {"updated": len(users), "users": [u.to_dict() for u in users]}})
+        return jsonify({"ok": True, "data": {"updated": len(users), "users": [u.to_dict() for u in users], "apply_status": apply_status}})
     finally:
         s.close()
 
@@ -1865,9 +1900,9 @@ def delete_user(uid):
             return jsonify({"ok": False, "error": "用户不存在"}), 404
         limit_ids = [user.id]
         log_detail = _format_log_user_detail(user)
+        apply_status = _stop_runtime_for_users(s, [user], remove=True)
         s.delete(user)
         s.commit()
-        apply_status = _reload_proxy(s)
         _clear_user_limits_background(limit_ids)
         _add_user_operation_log(s, "删除入站", log_detail)
         s.commit()
@@ -1902,12 +1937,14 @@ def update_user(uid):
 
             s.commit()
             s.refresh(user)
-            _reload_proxy(s)
+            apply_status = _apply_runtime_for_users(s, [user]) if user.status else {}
             if old_limit_enabled:
                 _clear_user_limits_background([user.id])
             if user.status and parse_speed_to_bps(user.speed_limit):
                 _apply_user_limits_background([user.id])
-            return jsonify({"ok": True, "data": user.to_dict()})
+            data = user.to_dict()
+            data["apply_status"] = apply_status
+            return jsonify({"ok": True, "data": data})
 
         proto = _normalize_protocol(data.get("protocol") or user.protocol)
         if proto not in PROTOCOL_TYPES:
@@ -1962,6 +1999,8 @@ def update_user(uid):
             user.ss_password = None
 
         old_limit_enabled = bool(parse_speed_to_bps(user.speed_limit))
+        old_line_id = user.line_id
+        old_is_instance = _is_inbound_instance(user)
         user.line_id = line.id
         user.protocol = proto
         user.listen_port = listen_port
@@ -1977,12 +2016,17 @@ def update_user(uid):
 
         s.commit()
         s.refresh(user)
-        _reload_proxy(s)
+        if old_is_instance:
+            inbound_instance_manager.stop_user(user.id)
+        apply_status = _apply_runtime_for_users(s, [user]) if user.status else _stop_runtime_for_users(s, [user], remove=False)
         if old_limit_enabled:
             _clear_user_limits_background([user.id])
         if user.status and parse_speed_to_bps(user.speed_limit):
             _apply_user_limits_background([user.id])
-        return jsonify({"ok": True, "data": user.to_dict()})
+        data = user.to_dict()
+        data["apply_status"] = apply_status
+        data["old_line_id"] = old_line_id
+        return jsonify({"ok": True, "data": data})
     finally:
         s.close()
 
@@ -2006,8 +2050,9 @@ def toggle_user(uid):
             _apply_user_limits_background([user.id])
         else:
             _clear_user_limits_background([user.id])
-        apply_status = _reload_proxy(s)
-        apply_status = _ensure_user_runtime_applied(s, user, bool(user.status), apply_status)
+        apply_status = _apply_runtime_for_users(s, [user]) if user.status else _stop_runtime_for_users(s, [user], remove=False)
+        if not _is_inbound_instance(user):
+            apply_status = _ensure_user_runtime_applied(s, user, bool(user.status), apply_status)
         data = user.to_dict()
         data["apply_status"] = apply_status
         return jsonify({"ok": True, "data": data})
@@ -2037,7 +2082,7 @@ def connection_info(uid):
             user.status = 0
             s.commit()
             _clear_user_limits_background([user.id])
-            _reload_proxy(s)
+            _stop_runtime_for_users(s, [user], remove=False)
             return jsonify({"ok": False, "error": "节点已到期并停用"}), 410
         if not user.status:
             return jsonify({"ok": False, "error": "节点已停用"}), 410
@@ -2123,9 +2168,9 @@ def _change_inbound_ip_one(s, data: dict, spec: dict, requested_ip: str = "") ->
 
     if old_user:
         limit_ids = [old_user.id]
+        apply_status = _stop_runtime_for_users(s, [old_user], remove=True)
         s.delete(old_user)
         s.commit()
-        _reload_proxy(s)
         _clear_user_limits_background(limit_ids)
     else:
         _remote_panel_delete(old_remote_server, f"/api/users/{old_remote_item.get('id')}")
@@ -2347,7 +2392,7 @@ def test_user(uid):
             user.status = 0
             s.commit()
             _clear_user_limits_background([user.id])
-            _reload_proxy(s)
+            _stop_runtime_for_users(s, [user], remove=False)
             return jsonify({"ok": False, "error": "节点已到期并停用"}), 410
         if not user.status:
             return jsonify({"ok": False, "error": "节点已停用"}), 410

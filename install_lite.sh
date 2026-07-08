@@ -106,10 +106,10 @@ Type=simple
 User=${SERVICE_USER}
 Environment=IPWIN42_LITE=1
 Environment=IPWIN42_NO_COLLECTOR=1
-Environment=IPWIN42_SINGBOX_WATCHDOG=1
+Environment=IPWIN42_SINGBOX_WATCHDOG=0
 Environment=IPWIN42_PANEL_PORT=${PANEL_PORT}
 WorkingDirectory=${APP_DIR}
-ExecStart=/usr/bin/${PYTHON_BIN} ${APP_DIR}/panel/app.py --no-browser --lite --singbox-watchdog
+ExecStart=/usr/bin/${PYTHON_BIN} ${APP_DIR}/panel/app.py --no-browser --lite
 Restart=always
 RestartSec=5
 KillMode=process

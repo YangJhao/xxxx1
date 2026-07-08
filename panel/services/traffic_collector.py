@@ -1,7 +1,9 @@
 """Traffic and connection collector for sing-box.
 
-Uses the local sing-box Clash API `/connections` endpoint. The endpoint exposes
-active connection upload/download counters, which we aggregate by inbound tag.
+Combines sing-box active connection counters with Linux port byte counters.
+The sing-box API is used for live inbound tags; iptables counters provide
+persistent per-port traffic deltas so totals keep moving even when the page is
+not open.
 """
 import json
 import os
@@ -15,7 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from models import ProxyUser, TrafficLog, get_session
-from services import wireguard_manager
+try:
+    from services import wireguard_manager
+except Exception:
+    wireguard_manager = None
 
 CLASH_CONNECTIONS_URL = "http://127.0.0.1:9090/connections"
 TRAFFIC_INPUT_CHAIN = "42IPWIN_TRAFFIC_IN"
@@ -26,6 +31,8 @@ _last_port_totals: dict[tuple[int, str], int] = {}
 _last_snapshot: dict[int, dict] = {}
 _last_snapshot_ts = 0.0
 _last_snapshot_error = ""
+_last_counter_ensure_ts = 0.0
+_COUNTER_ENSURE_INTERVAL = float(os.environ.get("IPWIN42_TRAFFIC_COUNTER_ENSURE_INTERVAL", "120"))
 
 
 def _user_tag(user: ProxyUser) -> str:
@@ -59,10 +66,13 @@ def _ensure_traffic_jump(hook: str, chain: str) -> None:
         _run_iptables(["-I", hook, "1", "-j", chain])
 
 
-def ensure_port_counters(session=None) -> dict:
-    """Install Linux iptables byte counters for every active inbound port."""
+def ensure_port_counters(session=None, *, force: bool = False) -> dict:
     if os.name == "nt":
         return {"ok": False, "skipped": True, "reason": "windows"}
+    global _last_counter_ensure_ts
+    now = time.time()
+    if not force and _last_counter_ensure_ts and now - _last_counter_ensure_ts < _COUNTER_ENSURE_INTERVAL:
+        return {"ok": True, "cached": True, "age": round(now - _last_counter_ensure_ts, 3)}
     own_session = session is None
     if own_session:
         session = get_session()
@@ -85,40 +95,19 @@ def ensure_port_counters(session=None) -> dict:
             comment = f"42ipwin-user-{user.id}"
             for proto in _traffic_protocols(user.protocol):
                 in_rule = [
-                    "-A",
-                    TRAFFIC_INPUT_CHAIN,
-                    "-p",
-                    proto,
-                    "--dport",
-                    port,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    f"{comment}-in",
-                    "-j",
-                    "RETURN",
+                    "-A", TRAFFIC_INPUT_CHAIN, "-p", proto, "--dport", port,
+                    "-m", "comment", "--comment", f"{comment}-in", "-j", "RETURN",
                 ]
-                check_in = ["-C", *in_rule[1:]]
-                if _run_iptables(check_in).returncode != 0:
+                if _run_iptables(["-C", *in_rule[1:]]).returncode != 0:
                     _run_iptables(in_rule)
                 out_rule = [
-                    "-A",
-                    TRAFFIC_OUTPUT_CHAIN,
-                    "-p",
-                    proto,
-                    "--sport",
-                    port,
-                    "-m",
-                    "comment",
-                    "--comment",
-                    f"{comment}-out",
-                    "-j",
-                    "RETURN",
+                    "-A", TRAFFIC_OUTPUT_CHAIN, "-p", proto, "--sport", port,
+                    "-m", "comment", "--comment", f"{comment}-out", "-j", "RETURN",
                 ]
-                check_out = ["-C", *out_rule[1:]]
-                if _run_iptables(check_out).returncode != 0:
+                if _run_iptables(["-C", *out_rule[1:]]).returncode != 0:
                     _run_iptables(out_rule)
                 installed += 2
+        _last_counter_ensure_ts = now
         return {"ok": True, "installed": installed, "users": len(users)}
     finally:
         if own_session:
@@ -160,7 +149,6 @@ def _port_counter_snapshot() -> dict[int, dict[str, int]]:
 
 
 def _port_counter_deltas(session) -> dict[int, tuple[int, int]]:
-    """Return upload/download deltas from persistent Linux port counters."""
     try:
         ensure_port_counters(session)
     except Exception:
@@ -179,6 +167,32 @@ def _port_counter_deltas(session) -> dict[int, tuple[int, int]]:
         if delta_upload or delta_download:
             deltas[uid] = (delta_upload, delta_download)
     return deltas
+
+
+def _count_system_port_connections(port_to_user_id: dict[int, int]) -> dict[int, int]:
+    if not port_to_user_id:
+        return {}
+    counts: dict[int, int] = {}
+    try:
+        proc = subprocess.run(["ss", "-Htan"], capture_output=True, text=True, timeout=2)
+    except Exception:
+        return {}
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        state = parts[0].upper()
+        if state not in {"ESTAB", "ESTABLISHED", "SYN-RECV", "SYN-SENT", "CLOSE-WAIT"}:
+            continue
+        local = parts[3]
+        try:
+            port = int(local.rsplit(":", 1)[1])
+        except Exception:
+            continue
+        uid = port_to_user_id.get(port)
+        if uid:
+            counts[uid] = counts.get(uid, 0) + 1
+    return counts
 
 
 def _connection_tag(conn: dict) -> str:
@@ -204,43 +218,66 @@ def _connection_tag(conn: dict) -> str:
 
 
 def snapshot_connections() -> dict[int, dict]:
-    """Return current active connection counts and bytes by ProxyUser id."""
     return snapshot_connections_status()["data"]
 
 
-def snapshot_connections_status() -> dict:
-    """Return current connection snapshot with freshness metadata.
-
-    On fetch failure, do not return stale counts as if they were live. The caller can
-    decide how to display the failure without misleading operators.
-    """
+def snapshot_connections_status(refresh: bool = True, max_age: float = 5.0) -> dict:
     global _last_snapshot_ts, _last_snapshot_error
     now = time.time()
-    if _last_snapshot and now - _last_snapshot_ts < 1.5:
+    if _last_snapshot and (not refresh or now - _last_snapshot_ts < max_age):
+        port_counters = _port_counter_snapshot()
+        age = now - _last_snapshot_ts
+        return {
+            "ok": True,
+            "stale": bool(age >= max_age),
+            "age": round(age, 3),
+            "error": _last_snapshot_error if age >= max_age else "",
+            "data": _last_snapshot.copy(),
+            "port_counter_users": set(port_counters),
+            "system_connection_users": {uid for uid, row in _last_snapshot.items() if row.get("system_connections")},
+        }
+    if not refresh:
         port_counters = _port_counter_snapshot()
         return {
             "ok": True,
-            "stale": False,
-            "error": "",
+            "stale": True,
+            "age": round(now - _last_snapshot_ts, 3) if _last_snapshot_ts else None,
+            "error": _last_snapshot_error,
             "data": _last_snapshot.copy(),
             "port_counter_users": set(port_counters),
+            "system_connection_users": {uid for uid, row in _last_snapshot.items() if row.get("system_connections")},
         }
 
     session = get_session()
     try:
-      users = { _user_tag(u): u.id for u in session.query(ProxyUser).all() }
+        user_rows = session.query(ProxyUser).all()
+        users_by_tag = {_user_tag(u): u.id for u in user_rows}
+        port_to_user_id = {}
+        for user in user_rows:
+            if not user.line:
+                continue
+            try:
+                port_to_user_id[int(_user_port(user))] = int(user.id)
+            except Exception:
+                continue
+        try:
+            ensure_port_counters(session)
+        except Exception:
+            pass
     finally:
-      session.close()
+        session.close()
 
     result: dict[int, dict] = {}
+    fetch_error = ""
     try:
         connections = _fetch_connections(timeout=0.5)
     except Exception as exc:
-        _last_snapshot_error = str(exc)
-        return {"ok": False, "stale": False, "error": _last_snapshot_error, "data": {}}
+        connections = []
+        fetch_error = str(exc)
+        _last_snapshot_error = fetch_error
 
     for conn in connections:
-        uid = users.get(_connection_tag(conn))
+        uid = users_by_tag.get(_connection_tag(conn))
         if not uid:
             continue
         item = result.setdefault(uid, {"connections": 0, "upload": 0, "download": 0})
@@ -248,19 +285,35 @@ def snapshot_connections_status() -> dict:
         item["upload"] += int(conn.get("upload") or 0)
         item["download"] += int(conn.get("download") or 0)
 
+    system_counts = _count_system_port_connections(port_to_user_id)
+    for uid, count in system_counts.items():
+        item = result.setdefault(uid, {"connections": 0, "upload": 0, "download": 0})
+        item["connections"] = max(int(item.get("connections") or 0), int(count or 0))
+        item["system_connections"] = int(count or 0)
+
+    port_counters = _port_counter_snapshot()
+    for uid in port_counters:
+        result.setdefault(uid, {"connections": 0, "upload": 0, "download": 0})
+
     _last_snapshot.clear()
     _last_snapshot.update(result)
     _last_snapshot_ts = now
-    _last_snapshot_error = ""
-    port_counters = _port_counter_snapshot()
-    return {"ok": True, "stale": False, "error": "", "data": result.copy(), "port_counter_users": set(port_counters)}
-
+    if not fetch_error:
+        _last_snapshot_error = ""
+    return {
+        "ok": True,
+        "stale": False,
+        "age": 0,
+        "error": fetch_error,
+        "data": result.copy(),
+        "port_counter_users": set(port_counters),
+        "system_connection_users": set(system_counts),
+    }
 
 def collect_once() -> dict:
-    """Collect sing-box current counters into proxy_users and traffic_log."""
     session = get_session()
     try:
-        users = { _user_tag(u): u.id for u in session.query(ProxyUser).all() }
+        users = {_user_tag(u): u.id for u in session.query(ProxyUser).all()}
     finally:
         session.close()
 
@@ -286,11 +339,6 @@ def collect_once() -> dict:
 
         conn_id = str(conn.get("id") or f"{uid}:{conn.get('start') or ''}:{upload}:{download}")
         seen_conn_ids.add(conn_id)
-        # Clash reports counters from the start of an active connection. When a
-        # connection is first observed after a panel restart or a delayed poll,
-        # count the visible total instead of using it as the baseline; otherwise
-        # long-running HY2/SS/SOCKS sessions can appear to have used almost no
-        # traffic until the next delta.
         prev_uid, prev_upload, prev_download = _last_conn_totals.get(conn_id, (uid, 0, 0))
         delta_upload = max(0, upload - prev_upload) if prev_uid == uid else 0
         delta_download = max(0, download - prev_download) if prev_uid == uid else 0
@@ -315,20 +363,20 @@ def collect_once() -> dict:
         port_deltas = _port_counter_deltas(session)
         for uid, (delta_upload, delta_download) in port_deltas.items():
             deltas[uid] = (delta_upload, delta_download)
-        wg_totals = wireguard_manager.transfer_snapshot(session)
-        for uid, (wg_rx, wg_tx) in wg_totals.items():
-            prev_rx, prev_tx = _last_wg_totals.get(uid, (wg_rx, wg_tx))
-            delta_rx = max(0, int(wg_rx) - int(prev_rx))
-            delta_tx = max(0, int(wg_tx) - int(prev_tx))
-            _last_wg_totals[uid] = (int(wg_rx), int(wg_tx))
-            if delta_rx or delta_tx:
-                old_up, old_down = deltas.get(uid, (0, 0))
-                deltas[uid] = (old_up + delta_tx, old_down + delta_rx)
+        if wireguard_manager is not None:
+            wg_totals = wireguard_manager.transfer_snapshot(session)
+            for uid, (wg_rx, wg_tx) in wg_totals.items():
+                prev_rx, prev_tx = _last_wg_totals.get(uid, (wg_rx, wg_tx))
+                delta_rx = max(0, int(wg_rx) - int(prev_rx))
+                delta_tx = max(0, int(wg_tx) - int(prev_tx))
+                _last_wg_totals[uid] = (int(wg_rx), int(wg_tx))
+                if delta_rx or delta_tx:
+                    old_up, old_down = deltas.get(uid, (0, 0))
+                    deltas[uid] = (old_up + delta_tx, old_down + delta_rx)
         for user in session.query(ProxyUser).all():
             delta_upload, delta_download = deltas.get(user.id, (0, 0))
             if not delta_upload and not delta_download:
                 continue
-
             user.bytes_in = int(user.bytes_in or 0) + delta_upload
             user.bytes_out = int(user.bytes_out or 0) + delta_download
             log = session.query(TrafficLog).filter_by(user_id=user.id, hour=hour).first()
@@ -339,7 +387,7 @@ def collect_once() -> dict:
             log.bytes_out = int(log.bytes_out or 0) + delta_download
             updated += 1
         session.commit()
-        return {"updated_rows": updated, "source": "sing-box clash api"}
+        return {"updated_rows": updated, "source": "port counters + sing-box clash api"}
     finally:
         session.close()
 

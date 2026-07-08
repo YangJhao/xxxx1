@@ -22,6 +22,7 @@ sing-box/*.pid
 sing-box/config.json
 sing-box/cert.pem
 sing-box/key.pem
+sing-box/inbound-instances/
 
 3proxy/logs/
 3proxy/*.pid

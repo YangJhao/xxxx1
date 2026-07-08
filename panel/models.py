@@ -107,6 +107,7 @@ class ProxyUser(Base):
     project_name = Column(String(96), nullable=True)
     speed_limit = Column(String(32), nullable=True)
     traffic_limit = Column(String(32), nullable=True)
+    runtime_mode = Column(String(32), nullable=True)
     status = Column(Integer, default=1)
     expire_at = Column(DateTime, nullable=True)
     bytes_in = Column(Integer, default=0)
@@ -235,6 +236,7 @@ class ProxyUser(Base):
             "project_name": self.project_name,
             "speed_limit": self.speed_limit,
             "traffic_limit": self.traffic_limit,
+            "runtime_mode": self.runtime_mode or "legacy",
             "status": self.status,
             "expire_at": self.expire_at.isoformat() if self.expire_at else None,
             "bytes_in": self.bytes_in,
@@ -454,6 +456,7 @@ def _migrate_db():
         ("project_name", "TEXT"),
         ("speed_limit", "TEXT"),
         ("traffic_limit", "TEXT"),
+        ("runtime_mode", "TEXT"),
     ]
     alter_admin = [
         ("display_name", "TEXT"),
@@ -529,6 +532,7 @@ def _migrate_db():
                     project_name TEXT,
                     speed_limit TEXT,
                     traffic_limit TEXT,
+                    runtime_mode TEXT,
                     status INTEGER,
                     expire_at DATETIME,
                     bytes_in INTEGER,
@@ -542,12 +546,12 @@ def _migrate_db():
                 INSERT INTO proxy_users_new (
                     id, username, password, ss_password, line_id, protocol, listen_port,
                     ss_method, operator, owner_name, project_name, speed_limit, traffic_limit,
-                    status, expire_at, bytes_in, bytes_out, note, created_at
+                    runtime_mode, status, expire_at, bytes_in, bytes_out, note, created_at
                 )
                 SELECT
                     id, username, password, ss_password, line_id, protocol, listen_port,
                     ss_method, operator, owner_name, project_name, speed_limit, traffic_limit,
-                    status, expire_at, bytes_in, bytes_out, note, created_at
+                    runtime_mode, status, expire_at, bytes_in, bytes_out, note, created_at
                 FROM proxy_users
             """))
             conn.execute(text("DROP TABLE proxy_users"))

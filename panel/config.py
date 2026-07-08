@@ -10,7 +10,7 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent                      # .../panel
 PROJECT_DIR = BASE_DIR.parent                                      # .../42IPwin
-APP_VERSION = "1.0.0.5"
+APP_VERSION = "1.0.0.6"
 IS_WINDOWS = platform.system().lower() == "windows"
 
 # ===== 目录 =====

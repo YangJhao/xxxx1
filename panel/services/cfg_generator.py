@@ -265,6 +265,10 @@ def _user_port(user: ProxyUser) -> int:
     return user.listen_port or user.line.get_port_by_protocol(user.protocol)
 
 
+def _legacy_users(users: list[ProxyUser]) -> list[ProxyUser]:
+    return [user for user in users if (getattr(user, "runtime_mode", "") or "") != "inbound_instance"]
+
+
 def _nat_protocols(proto: str) -> list[str]:
     proto = (proto or "socks5").lower()
     if proto in {"socks5", "ss", "hysteria2"}:
@@ -359,7 +363,7 @@ def _ensure_linux_source_routes(session, local_ips: set[str] | None = None) -> N
         _delete_source_rules(public_ip)
         _run_ip(["rule", "add", "from", f"{public_ip}/32", "priority", str(priority), "table", str(table)])
 
-    users = session.query(ProxyUser).filter_by(status=1).all()
+    users = _legacy_users(session.query(ProxyUser).filter_by(status=1).all())
     line_ids = {user.line_id for user in users}
     if not line_ids:
         return
@@ -392,7 +396,7 @@ def _ensure_linux_listen_ips(session) -> None:
     if os.name == "nt":
         return
     ifaces = psutil.net_if_addrs()
-    users = session.query(ProxyUser).filter_by(status=1).all()
+    users = _legacy_users(session.query(ProxyUser).filter_by(status=1).all())
     line_ids = {user.line_id for user in users}
     if not line_ids:
         return
@@ -421,7 +425,7 @@ def _apply_linux_nat(session) -> None:
     _ensure_nat_jump("PREROUTING", chain)
     _ensure_nat_jump("OUTPUT", chain)
 
-    users = session.query(ProxyUser).filter_by(status=1).all()
+    users = _legacy_users(session.query(ProxyUser).filter_by(status=1).all())
     for user in users:
         line = user.line
         if not line or line.status != 1:
@@ -451,7 +455,7 @@ def generate_cfg(session=None) -> str:
     if own_session:
         session = get_session()
     try:
-        users = session.query(ProxyUser).filter_by(status=1).all()
+        users = _legacy_users(session.query(ProxyUser).filter_by(status=1).all())
         lines = [
             line
             for line in session.query(Line).order_by(Line.id).all()
