@@ -211,7 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const text = value || 'unknown';
     if (text === 'online' || text === 'installed') return `<span class="badge bg-success">${escapeHtml(text)}</span>`;
     if (text === 'error' || text === 'failed') return `<span class="badge bg-danger">${escapeHtml(text)}</span>`;
-    if (text === 'installing') return `<span class="badge bg-warning">${escapeHtml(text)}</span>`;
+    if (text === 'installing' || text === 'queued') return `<span class="badge bg-warning">${escapeHtml(text)}</span>`;
     return `<span class="badge bg-secondary">${escapeHtml(text)}</span>`;
   }
 

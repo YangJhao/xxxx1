@@ -13,7 +13,7 @@ import threading
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,6 +31,8 @@ PROJECT_DIR = Path(__file__).resolve().parents[2]
 INSTALL_SCRIPT = PROJECT_DIR / "install_single_ip.sh"
 TAR_EXCLUDES = {".git", "__pycache__", "data/backups", "control_center", "control_center_old_20260702-013419"}
 TAR_INCLUDE_ROOTS = ("panel", "sing-box", "install_lite.sh", "install_single_ip.sh", "restore_macvlans.py")
+INSTALL_BATCH_SIZE = 5
+INSTALL_STALE_AFTER = timedelta(minutes=30)
 
 
 def _operator():
@@ -163,6 +165,23 @@ def _ensure_single_ip_server(session) -> None:
         row.status = "online"
         row.install_status = "installed"
         row.note = row.note or "single-ip-local"
+
+
+def _unlock_stale_install_jobs(session) -> int:
+    cutoff = datetime.utcnow() - INSTALL_STALE_AFTER
+    rows = (
+        session.query(ManagedServer)
+        .filter(
+            ManagedServer.install_status.in_(("installing", "queued")),
+            ManagedServer.updated_at < cutoff,
+        )
+        .all()
+    )
+    for row in rows:
+        row.install_status = "idle"
+        row.last_error = "安装任务超时或面板重启中断，已自动解锁，请重新点击安装"
+        row.updated_at = datetime.utcnow()
+    return len(rows)
 
 
 def _remote_server_counts(server) -> dict:
@@ -315,6 +334,7 @@ def list_servers():
     s = get_session()
     try:
         _ensure_single_ip_server(s)
+        _unlock_stale_install_jobs(s)
         s.commit()
         rows = s.query(ManagedServer).order_by(ManagedServer.id.desc()).all()
         servers = []
@@ -632,9 +652,13 @@ def install_servers():
     try:
         rows = s.query(ManagedServer).filter(ManagedServer.id.in_(ids)).all()
         jobs = []
-        for row in rows:
-            row.install_status = "installing"
-            row.last_error = "安装任务已提交，后台并发执行中..."
+        for idx, row in enumerate(rows):
+            row.install_status = "installing" if idx < INSTALL_BATCH_SIZE else "queued"
+            row.last_error = (
+                "安装任务正在执行，本批最多 5 台并发..."
+                if idx < INSTALL_BATCH_SIZE
+                else "安装任务已排队，等待前一批完成..."
+            )
             row.updated_at = datetime.utcnow()
             jobs.append(SimpleNamespace(
                 id=row.id,
@@ -656,9 +680,15 @@ def install_servers():
         def run_background_install(jobs_to_run):
             bg_session = get_session()
             try:
-                batch_size = 5
+                batch_size = INSTALL_BATCH_SIZE
                 for offset in range(0, len(jobs_to_run), batch_size):
                     batch = jobs_to_run[offset:offset + batch_size]
+                    batch_ids = [job.id for job in batch]
+                    for row in bg_session.query(ManagedServer).filter(ManagedServer.id.in_(batch_ids)).all():
+                        row.install_status = "installing"
+                        row.last_error = "安装任务正在执行，本批最多 5 台并发..."
+                        row.updated_at = datetime.utcnow()
+                    bg_session.commit()
                     with ThreadPoolExecutor(max_workers=min(batch_size, max(1, len(batch)))) as executor:
                         futures = [executor.submit(install_row, job) for job in batch]
                         for future in as_completed(futures):
