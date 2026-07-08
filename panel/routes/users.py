@@ -1459,9 +1459,6 @@ def _create_user_v3():
     if expire_at_str and expire_at is None:
         return jsonify({"ok": False, "error": "到期时间格式错误"}), 400
 
-    if protocol == "wireguard" and not wireguard_manager.available():
-        return jsonify({"ok": False, "error": "WireGuard tools not installed: install wireguard-tools first"}), 400
-
     s = get_session()
     try:
         remote_create_count = remote_count if (local_count or str(line_id).lower() == "lite") else count
@@ -1499,6 +1496,9 @@ def _create_user_v3():
             lines = _target_lines(s, line_id, count)
         if not lines:
             return jsonify({"ok": False, "error": "线路不存在"}), 400
+
+        if protocol == "wireguard" and not wireguard_manager.available():
+            return jsonify({"ok": False, "error": "WireGuard tools not installed: install wireguard-tools first"}), 400
 
         forced_port = None
         used_ports = _used_listen_ports(s)

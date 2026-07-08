@@ -36,7 +36,7 @@ install_packages() {
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     python3 python3-flask python3-sqlalchemy python3-psutil python3-requests \
-    python3-paramiko curl iproute2 iptables procps rsync ca-certificates openssl
+    python3-paramiko curl iproute2 iptables procps rsync ca-certificates openssl wireguard-tools
 }
 
 apply_network_tuning() {

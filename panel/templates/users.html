@@ -436,7 +436,6 @@
   </div>
 </div>
 {% endblock %}
-
 {% block scripts %}
 <script>
 let allUsers = [];
@@ -794,6 +793,7 @@ function portFor(u) {
 }
 
 function outputLine(u) {
+  if (u.protocol === 'wireguard') return '';
   const expire = formatDate(u.expire_at);
   const appendExpire = (text) => {
     const value = String(text || '').trim();
@@ -806,16 +806,15 @@ function outputLine(u) {
   const port = portFor(u);
   if (u.protocol === 'vmess') return appendExpire(protocolUri(u));
   if (u.protocol === 'hysteria2') return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
-  if (u.protocol === 'wireguard') return `${ip}|${port}|wireguard|${u.username || ''}|${expire}`;
   if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}|${expire}`;
   return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
 }
 
 function protocolUri(u) {
-  if (u.uri) return u.uri;
   const ip = u.line_ip || '';
   const port = portFor(u);
   if (u.protocol === 'wireguard') return `${ip}:${port} ${u.username || ''}.conf`;
+  if (u.uri) return u.uri;
   if (u.protocol === 'vless') return `vless://${u.password}@${ip}:${port}?encryption=none&type=tcp#${encodeURIComponent(u.username || 'vless')}`;
   if (u.protocol === 'vmess') {
     const payload = {
@@ -844,6 +843,23 @@ function protocolUri(u) {
 
 function outputLines(rows) {
   return (rows || []).map(outputLine).filter(Boolean);
+}
+
+function wireGuardRows(rows) {
+  return (rows || []).filter(row => row && row.protocol === 'wireguard');
+}
+
+function wireGuardIds(rows) {
+  return wireGuardRows(rows).map(row => row.id || (row.managed_server_id && row.local_id ? `remote:${row.managed_server_id}:${row.local_id}` : '')).filter(Boolean).join(',');
+}
+
+async function downloadWireGuardZip(rows, fallbackName = 'wireguard-confs.zip') {
+  const ids = wireGuardIds(rows);
+  if (!ids) {
+    toast('没有 WireGuard 配置可下载', 'error');
+    return false;
+  }
+  return downloadUrl(`/api/users/wireguard.zip?ids=${encodeURIComponent(ids)}`, fallbackName);
 }
 
 async function copyRows(rows, label) {
@@ -877,19 +893,29 @@ function showCreateResult(data) {
   const skipped = data.skipped || [];
   const applyStatus = data.apply_status || {};
   const lines = outputLines(rows);
+  const wgRows = wireGuardRows(rows);
+  const nonWgRows = rows.filter(row => row.protocol !== 'wireguard');
   lastCreateResultText = lines.join('\n');
   lastCreateResultCsv = createResultCsv(rows);
   const summary = [];
   if (rows.length) summary.push(`<div class="result-ok">成功 ${rows.length} 条</div>`);
+  if (wgRows.length) summary.push(`<div class="result-ok">WireGuard CONF ${wgRows.length} 个，请下载配置文件。</div>`);
   if (applyStatus.message && !applyStatus.applied) summary.push(`<div class="result-error">自动应用失败：${escapeHtml(applyStatus.message)}</div>`);
   if (applyStatus.applied) summary.push(`<div class="result-ok">${escapeHtml(applyStatus.message || '已自动应用配置，创建完成即可使用')}</div>`);
   if (skipped.length) summary.push(`<div class="text-muted">跳过 ${skipped.length} 条：</div><div class="result-errors text-muted">${skipped.map(escapeHtml).join('<br>')}</div>`);
   if (errors.length) summary.push(`<div class="result-error">失败 ${errors.length} 条：</div><div class="result-errors">${errors.map(escapeHtml).join('<br>')}</div>`);
   if (!rows.length && !errors.length && !skipped.length) summary.push('<div class="text-muted">没有成功创建的入站。</div>');
   $('#createResultSummary').html(summary.join(''));
-  $('#createResultBox').text(lines.length ? lines.join('\n') : '没有成功创建的入站。');
+  if (wgRows.length && !nonWgRows.length) {
+    $('#createResultBox').text(`WireGuard 创建成功 ${wgRows.length} 个，请点击“下载 CONF”获取 .conf 配置文件。`);
+  } else if (wgRows.length) {
+    $('#createResultBox').text(`${lines.join('\n')}\n\nWireGuard 创建成功 ${wgRows.length} 个，请点击“下载 CONF”获取 .conf 配置文件。`.trim());
+  } else {
+    $('#createResultBox').text(lines.length ? lines.join('\n') : '没有成功创建的入站。');
+  }
   $('#btnApplyProxyConfig').addClass('d-none');
-  $('#btnDownloadCreateConfs').toggleClass('d-none', !rows.some(row => row.protocol === 'wireguard'));
+  $('#btnCopyCreateResult').toggleClass('d-none', !!(wgRows.length && !nonWgRows.length));
+  $('#btnDownloadCreateConfs').toggleClass('d-none', !wgRows.length);
   new bootstrap.Modal(document.getElementById('createResultModal')).show();
 }
 
@@ -1095,7 +1121,7 @@ function renderUsers() {
         <td>${trafficCell(u)}</td>
         <td>${escapeHtml(formatDate(u.expire_at))}</td>
         <td class="line-actions">
-          <button class="mini-btn" onclick="copyNode('${rowId}', this)">复制</button>
+          ${u.protocol === 'wireguard' ? '' : `<button class="mini-btn" onclick="copyNode('${rowId}', this)">复制</button>`}
           <button class="mini-btn" onclick="showInfo('${rowId}')">信息</button>
           ${u.protocol === 'wireguard' ? `<button class="mini-btn" onclick="downloadWireGuardConf('${rowId}')">CONF</button>` : ''}
         </td>
@@ -1627,14 +1653,25 @@ function updateNodeStats() {
 function exportText() {
   const ids = selectedIds();
   const source = ids.length ? allUsers.filter(u => ids.map(String).includes(String(u.id))) : matchedUsers();
-  const rows = source.map(outputLine);
+  const wgRows = wireGuardRows(source);
+  const normalRows = source.filter(u => u.protocol !== 'wireguard');
+  if (wgRows.length && !normalRows.length) {
+    downloadWireGuardZip(wgRows);
+    return;
+  }
+  const rows = normalRows.map(outputLine).filter(Boolean);
   if (!rows.length) return toast('没有可导出的数据', 'error');
   const proto = $('#filterProtocol').val() || 'all';
+  if (wgRows.length) toast('WireGuard 已跳过文本导出，请单独筛选 WireGuard 下载 CONF。', 'error', 6000);
   downloadText(`${proto}-proxy.txt`, rows.join('\n'));
 }
 
 async function copyNode(id, btn) {
   const u = allUsers.find(x => String(x.id) === String(id));
+  if (u && u.protocol === 'wireguard') {
+    await downloadWireGuardConf(id);
+    return;
+  }
   const ok = await copyText(u ? outputLine(u) : '');
   if (ok && btn) {
     const old = btn.textContent;
@@ -1718,11 +1755,9 @@ async function downloadWireGuardConf(id) {
 }
 
 async function downloadCreateConfs() {
-  const rows = lastCreateResultRows.filter(row => row.protocol === 'wireguard');
+  const rows = wireGuardRows(lastCreateResultRows);
   if (!rows.length) return toast('没有 WireGuard 配置可下载', 'error');
-  const ids = rows.map(row => row.id || (row.managed_server_id && row.local_id ? `remote:${row.managed_server_id}:${row.local_id}` : '')).filter(Boolean).join(',');
-  if (!ids) return toast('没有 WireGuard 配置可下载', 'error');
-  const ok = await downloadUrl(`/api/users/wireguard.zip?ids=${encodeURIComponent(ids)}`, 'wireguard-confs.zip');
+  const ok = await downloadWireGuardZip(rows);
   if (ok) toast(`已下载 ${rows.length} 个 CONF 配置包`, 'success');
 }
 
