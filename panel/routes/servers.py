@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 from flask import Blueprint, jsonify, request, session
 
+from config import is_single_ip_mode
 from models import Line, ManagedServer, ProxyUser, get_session
 from routes.auth import login_required
 from services.audit_logger import write_operation_log
@@ -110,6 +111,41 @@ def _local_server_ips() -> set[str]:
         if value:
             ips.add(value)
     return ips
+
+
+def _single_ip_public_ip() -> str:
+    for key in ("IPWIN42_PUBLIC_IP", "PUBLIC_IP", "SERVER_PUBLIC_IP"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _ensure_single_ip_server(session) -> None:
+    if not is_single_ip_mode():
+        return
+    ip = _single_ip_public_ip()
+    if not ip:
+        return
+    row = session.query(ManagedServer).filter(ManagedServer.ip == ip).first()
+    if not row:
+        row = ManagedServer(
+            ip=ip,
+            ssh_port=22,
+            username="root",
+            password="",
+            group_name="本机",
+            status="online",
+            install_status="installed",
+            note="single-ip-local",
+        )
+        session.add(row)
+        session.flush()
+    else:
+        row.group_name = row.group_name or "本机"
+        row.status = "online"
+        row.install_status = "installed"
+        row.note = row.note or "single-ip-local"
 
 
 def _remote_server_counts(server) -> dict:
@@ -249,6 +285,8 @@ def _make_project_archive():
 def list_servers():
     s = get_session()
     try:
+        _ensure_single_ip_server(s)
+        s.commit()
         rows = s.query(ManagedServer).order_by(ManagedServer.id.desc()).all()
         servers = []
         local_ips = _local_server_ips()

@@ -1285,11 +1285,11 @@ def _create_user_v3():
     password = (data.get("password") or "").strip()
     protocol = _normalize_protocol(data.get("protocol"))
     ss_method = (data.get("ss_method") or "aes-256-gcm").strip()
-    line_id = data.get("line_id") or data.get("ip") or data.get("ip_select") or ("lite" if is_lite_mode() else "all")
-    if is_single_ip_mode():
-        line_id = "lite"
     line_ids = data.get("line_ids") or []
-    server_ids = [] if is_single_ip_mode() else (data.get("server_ids") or [])
+    server_ids = data.get("server_ids") or []
+    line_id = data.get("line_id") or data.get("ip") or data.get("ip_select") or ("lite" if is_lite_mode() else "all")
+    if is_single_ip_mode() and not server_ids and not line_ids:
+        line_id = "lite"
     expire_at_str = data.get("expire_at") or ""
     speed_limit = _normalize_speed_limit(data.get("speed_limit"), DEFAULT_SPEED_LIMIT)
     traffic_limit = _normalize_traffic_limit(data.get("traffic_limit"), DEFAULT_TRAFFIC_LIMIT)
