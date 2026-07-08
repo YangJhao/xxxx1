@@ -233,6 +233,7 @@ def _detect_lite_install(row) -> tuple[str, str, str, dict]:
 
     try:
         ssh = _ssh_connect(row, timeout=12)
+        status = "online"
         try:
             code, out, err = _run(
                 ssh,
@@ -243,8 +244,6 @@ def _detect_lite_install(row) -> tuple[str, str, str, dict]:
             )
             text = f"{out}\n{err}".strip()
             messages.append(text)
-            if "/opt/42IPwin" in text or "active" in text or "HTTP:200" in text or "HTTP:302" in text:
-                status = "online"
             if "active" in text and ("HTTP:200" in text or "HTTP:302" in text):
                 install_status = "installed"
         finally:
@@ -651,8 +650,12 @@ def install_servers():
     s = get_session()
     try:
         rows = s.query(ManagedServer).filter(ManagedServer.id.in_(ids)).all()
+        eligible_rows = [
+            row for row in rows
+            if (row.install_status or "idle") not in {"installed", "installing", "queued"}
+        ]
         jobs = []
-        for idx, row in enumerate(rows):
+        for idx, row in enumerate(eligible_rows):
             row.install_status = "installing" if idx < INSTALL_BATCH_SIZE else "queued"
             row.last_error = (
                 "安装任务正在执行，本批最多 5 台并发..."
@@ -669,6 +672,9 @@ def install_servers():
             ))
         s.commit()
         results = [row.to_dict() for row in rows]
+        if not jobs:
+            _log("一键安装42轻量", f"跳过 {len(results)} 台，均已安装或正在队列中")
+            return jsonify({"ok": True, "servers": results, "skipped": len(results)})
 
         def install_row(job):
             try:
