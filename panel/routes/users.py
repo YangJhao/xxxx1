@@ -1,5 +1,6 @@
 """Proxy user management APIs."""
 import os
+import base64
 import re
 import secrets
 import socket
@@ -367,7 +368,7 @@ def _remote_users_from_managed_servers(session) -> list[dict]:
                 item["id"] = f"remote:{server.id}:{item.get('id')}"
                 item["managed_server_id"] = server.id
                 item["managed_server_ip"] = server.ip
-                item["line_ip"] = item.get("line_ip") or server.ip
+                item = _normalize_remote_public_item(item, server.ip)
                 item["line_name"] = item.get("line_name") or server.ip
                 item["note"] = item.get("note") or ""
                 item["traffic_available"] = item.get("traffic_available", False)
@@ -413,6 +414,8 @@ def _create_on_managed_servers(session, server_ids: list[int], data: dict, count
         payload["line_id"] = "lite"
         payload["line_ids"] = []
         payload["count"] = 1
+        payload["server_public_ip"] = server.ip
+        payload["public_ip_override"] = server.ip
         try:
             result = _remote_panel_post(server, "/api/users", payload)
             result_data = result.get("data") or {}
@@ -424,6 +427,7 @@ def _create_on_managed_servers(session, server_ids: list[int], data: dict, count
                 item["id"] = f"remote:{server.id}:{item.get('id')}"
                 item["managed_server_id"] = server.id
                 item["managed_server_ip"] = server.ip
+                item = _normalize_remote_public_item(item, server.ip)
                 server_created.append(item)
             return server_created, None
         except Exception as exc:
@@ -528,7 +532,120 @@ def _is_public_ip(ip: str) -> bool:
         return False
 
 
+def _decode_vmess_payload(value: str) -> dict | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    for decoder in (base64.urlsafe_b64decode, base64.b64decode):
+        try:
+            padded = raw + "=" * (-len(raw) % 4)
+            data = json.loads(decoder(padded.encode("ascii")).decode("utf-8", "replace"))
+            return data if isinstance(data, dict) else None
+        except Exception:
+            continue
+    return None
+
+
+def _encode_vmess_payload(data: dict) -> str:
+    return base64.urlsafe_b64encode(
+        json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+
+
+def _replace_pipe_host(text: str, public_ip: str) -> str:
+    value = str(text or "").strip()
+    if not value or "|" not in value or not public_ip:
+        return value
+    parts = value.split("|")
+    if len(parts) >= 2:
+        parts[0] = public_ip
+    return "|".join(parts)
+
+
+def _replace_uri_host(text: str, public_ip: str) -> str:
+    value = str(text or "").strip()
+    if not value or not public_ip:
+        return value
+    if "|" in value and "://" not in value:
+        return _replace_pipe_host(value, public_ip)
+    if value.startswith("vmess://"):
+        payload = _decode_vmess_payload(value[8:])
+        if payload is None:
+            return value
+        payload["add"] = public_ip
+        return "vmess://" + _encode_vmess_payload(payload)
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except Exception:
+        return value
+    if not parsed.scheme or not parsed.netloc:
+        return value
+    userinfo = ""
+    hostport = parsed.netloc
+    if "@" in hostport:
+        userinfo, hostport = hostport.rsplit("@", 1)
+        userinfo += "@"
+    port = ""
+    if hostport.startswith("[") and "]" in hostport:
+        rest = hostport.split("]", 1)[1]
+        if rest.startswith(":"):
+            port = rest[1:]
+    elif ":" in hostport:
+        port = hostport.rsplit(":", 1)[1]
+    new_hostport = f"{public_ip}:{port}" if port else public_ip
+    return urllib.parse.urlunsplit((parsed.scheme, userinfo + new_hostport, parsed.path, parsed.query, parsed.fragment))
+
+
+def _normalize_remote_public_item(item: dict, public_ip: str) -> dict:
+    public_ip = (public_ip or "").strip()
+    if not public_ip:
+        return item
+    item["line_ip"] = public_ip
+    item["server"] = public_ip
+    if item.get("ip"):
+        item["ip"] = public_ip
+    if item.get("field"):
+        item["field"] = _replace_pipe_host(item.get("field"), public_ip)
+    if item.get("uri"):
+        item["uri"] = _replace_uri_host(item.get("uri"), public_ip)
+    inbound = item.get("inbound")
+    if isinstance(inbound, dict):
+        inbound["address"] = public_ip
+    outbound = item.get("outbound")
+    if isinstance(outbound, dict):
+        outbound["outbound_ip"] = public_ip
+    return item
+
+
+def _normalize_connection_info(data: dict, public_ip: str) -> dict:
+    if not isinstance(data, dict):
+        return data
+    item = dict(data)
+    if public_ip:
+        item["server"] = public_ip
+        if item.get("field"):
+            item["field"] = _replace_pipe_host(item.get("field"), public_ip)
+        if item.get("uri"):
+            item["uri"] = _replace_uri_host(item.get("uri"), public_ip)
+        inbound = item.get("inbound")
+        if isinstance(inbound, dict):
+            inbound["address"] = public_ip
+        outbound = item.get("outbound")
+        if isinstance(outbound, dict):
+            outbound["outbound_ip"] = public_ip
+    return item
+
+
 def _detect_public_ip() -> str:
+    if is_single_ip_mode():
+        try:
+            data = request.get_json(silent=True) or {}
+            for key in ("server_public_ip", "public_ip_override", "public_ip"):
+                value = (data.get(key) or "").strip()
+                if _is_public_ip(value):
+                    return value
+        except Exception:
+            pass
     env_ip = (os.environ.get("IPWIN42_PUBLIC_IP") or os.environ.get("PUBLIC_IP") or "").strip()
     if is_single_ip_mode() and env_ip:
         return env_ip
@@ -2277,7 +2394,10 @@ def remote_connection_info():
         server = s.query(ManagedServer).get(server_id)
         if not server:
             return jsonify({"ok": False, "error": "server not found"}), 404
-        return jsonify(_remote_panel_get(server, f"/api/users/{user_id}/connection-info", timeout=15))
+        result = _remote_panel_get(server, f"/api/users/{user_id}/connection-info", timeout=15)
+        if result.get("ok") and isinstance(result.get("data"), dict):
+            result["data"] = _normalize_connection_info(result["data"], server.ip)
+        return jsonify(result)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
     finally:
