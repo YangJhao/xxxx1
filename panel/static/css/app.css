@@ -1292,6 +1292,23 @@ body { display: flex; }
   margin: 0;
   cursor: pointer;
 }
+.node-picker-group {
+  margin-left: auto;
+  min-width: 160px;
+  max-width: 240px;
+  flex: 0 1 220px;
+}
+.node-picker-group .form-select {
+  width: 100%;
+  min-height: 38px;
+  height: 38px;
+  padding: 6px 34px 6px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 800;
+  background-color: #fff;
+  box-shadow: none;
+}
 .node-picker-head strong {
   color: #6c7484;
   font-size: 13px;
@@ -2022,6 +2039,13 @@ body { display: flex; }
   .node-picker-list {
     max-height: min(360px, calc(100vh - 410px));
   }
+  .node-picker-head {
+    flex-wrap: wrap;
+  }
+  .node-picker-group {
+    flex: 1 1 180px;
+    max-width: none;
+  }
   .toolbar-search {
     min-width: 0;
     justify-content: flex-start;
@@ -2348,6 +2372,13 @@ body { display: flex; }
   .node-picker-list {
     grid-template-columns: 1fr;
     max-height: 260px;
+  }
+  .node-picker-group {
+    flex-basis: 100%;
+    order: 3;
+  }
+  .node-picker-head strong {
+    margin-left: auto;
   }
   .create-form-grid .form-control,
   .create-form-grid .form-select {

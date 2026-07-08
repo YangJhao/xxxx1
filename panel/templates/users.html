@@ -192,6 +192,11 @@
               <input class="form-check-input" type="checkbox" id="checkAllCreateNodes" checked>
               <span>全选可用节点</span>
             </label>
+            <div class="node-picker-group">
+              <select class="form-select" id="serverGroupFilter" aria-label="分组选择">
+                <option value="">全部分组</option>
+              </select>
+            </div>
             <strong id="availableNodeCount">可用 0 个</strong>
           </div>
           <select class="form-select d-none" id="userLine" multiple size="6" required></select>
@@ -510,9 +515,37 @@ function localMatchesExclude() {
   });
 }
 
+function selectedServerGroup() {
+  return ($('#serverGroupFilter').val() || '').trim();
+}
+
+function serverMatchesGroup(server) {
+  const group = selectedServerGroup();
+  if (!group) return true;
+  const name = (server.group_name || '').trim() || '未分组';
+  return name === group;
+}
+
+function refreshCreateGroupOptions() {
+  const select = $('#serverGroupFilter');
+  if (!select.length) return;
+  const previous = select.val() || '';
+  const groups = Array.from(new Set(
+    (allManagedServers || [])
+      .filter(server => !server.is_local && server.install_status === 'installed')
+      .map(server => (server.group_name || '').trim() || '未分组')
+  )).sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true }));
+  select.empty().append('<option value="">全部分组</option>');
+  groups.forEach(group => {
+    select.append(`<option value="${escapeHtml(group)}">${escapeHtml(group)}</option>`);
+  });
+  select.val(groups.includes(previous) ? previous : '');
+}
+
 function visibleManagedServers() {
   return (allManagedServers || [])
     .filter(server => !serverMatchesExclude(server))
+    .filter(server => serverMatchesGroup(server))
     .filter(server => !server.is_local)
     .filter(server => server.install_status === 'installed')
     .slice()
@@ -635,6 +668,7 @@ async function loadLines() {
     if (sr.ok && (sr.servers || []).length) {
       allManagedServers = sr.servers || [];
       localServerIp = sr.local_ip || localServerIp || location.hostname;
+      refreshCreateGroupOptions();
       const remoteServers = visibleManagedServers();
       if (IS_SINGLE_IP_MODE && remoteServers.length) {
         allLines = [];
@@ -1343,8 +1377,10 @@ function resetForm() {
   $('.expire-quick button').removeClass('active');
   $('.expire-quick button[data-days="1"]').addClass('active');
   $('#userProject').val('');
+  $('#serverGroupFilter').val('');
   $('#userProtocol').val(arguments[0] || 'socks5').trigger('change');
   createPickerManual = false;
+  renderCreateNodePicker();
   setCreateNodeSelection(defaultCreateSelection());
   $('#userCount').val(1);
   syncDefaultAccountPassword(true);
@@ -1884,6 +1920,10 @@ $(async () => {
   $('#userOwner').on('input change', applyCustomerNote);
   $('#userExclude,#projectExclude').on('input change', function() {
     renderCreateNodePicker({ preserveSelection: createPickerManual });
+  });
+  $('#serverGroupFilter').on('change', function() {
+    createPickerManual = false;
+    renderCreateNodePicker();
   });
   $('#checkAllCreateNodes').on('change', function() {
     const checked = this.checked;
