@@ -1,4 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/42IPwin-single}"

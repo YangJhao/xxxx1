@@ -246,26 +246,38 @@ def _detect_lite_install(row) -> tuple[str, str, str, dict]:
     return status, install_status, detail[-1200:], counts
 
 
-def _ssh_connect(server, timeout=12):
+def _ssh_connect(server, timeout=12, attempts=2):
     try:
         import paramiko
     except Exception as exc:
         raise RuntimeError(f"缺少 SSH 依赖 paramiko：{exc}") from exc
 
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(
-        server.ip,
-        port=int(server.ssh_port or 22),
-        username=server.username or "root",
-        password=server.password or "",
-        timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
-        look_for_keys=False,
-        allow_agent=False,
-    )
-    return client
+    last_exc = None
+    for attempt in range(max(1, int(attempts or 1))):
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(
+                server.ip,
+                port=int(server.ssh_port or 22),
+                username=server.username or "root",
+                password=server.password or "",
+                timeout=timeout,
+                banner_timeout=max(timeout, 30),
+                auth_timeout=max(timeout, 20),
+                look_for_keys=False,
+                allow_agent=False,
+            )
+            return client
+        except Exception as exc:
+            last_exc = exc
+            try:
+                client.close()
+            except Exception:
+                pass
+            if attempt + 1 < max(1, int(attempts or 1)):
+                time.sleep(1.5)
+    raise last_exc
 
 
 def _run(ssh, command, timeout=900):
@@ -639,23 +651,27 @@ def install_servers():
                 output = _install_one(job)
                 return job.id, "online", "installed", output
             except Exception as exc:
-                return job.id, "error", "failed", str(exc)[-1200:]
+                return job.id, None, "failed", str(exc)[-1200:]
 
         def run_background_install(jobs_to_run):
             bg_session = get_session()
             try:
-                with ThreadPoolExecutor(max_workers=min(10, max(1, len(jobs_to_run)))) as executor:
-                    futures = [executor.submit(install_row, job) for job in jobs_to_run]
-                    for future in as_completed(futures):
-                        row_id, status, install_status, message = future.result()
-                        row = bg_session.query(ManagedServer).get(row_id)
-                        if not row:
-                            continue
-                        row.status = status
-                        row.install_status = install_status
-                        row.last_error = message
-                        row.updated_at = datetime.utcnow()
-                        bg_session.commit()
+                batch_size = 5
+                for offset in range(0, len(jobs_to_run), batch_size):
+                    batch = jobs_to_run[offset:offset + batch_size]
+                    with ThreadPoolExecutor(max_workers=min(batch_size, max(1, len(batch)))) as executor:
+                        futures = [executor.submit(install_row, job) for job in batch]
+                        for future in as_completed(futures):
+                            row_id, status, install_status, message = future.result()
+                            row = bg_session.query(ManagedServer).get(row_id)
+                            if not row:
+                                continue
+                            if status:
+                                row.status = status
+                            row.install_status = install_status
+                            row.last_error = message
+                            row.updated_at = datetime.utcnow()
+                            bg_session.commit()
             finally:
                 bg_session.close()
 
@@ -694,7 +710,7 @@ def upgrade_servers():
                 output = _upgrade_one(job)
                 return job.id, "online", "installed", output
             except Exception as exc:
-                return job.id, "error", "failed", str(exc)[-1200:]
+                return job.id, None, "failed", str(exc)[-1200:]
 
         def run_background_upgrade(jobs_to_run):
             bg_session = get_session()
@@ -706,7 +722,8 @@ def upgrade_servers():
                         row = bg_session.query(ManagedServer).get(row_id)
                         if not row:
                             continue
-                        row.status = status
+                        if status:
+                            row.status = status
                         row.install_status = install_status
                         row.last_error = message
                         row.updated_at = datetime.utcnow()
