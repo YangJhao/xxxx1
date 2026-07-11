@@ -425,6 +425,54 @@ def _remote_panel_delete(server: ManagedServer, path: str, timeout: int = 20) ->
     return result or {"ok": True}
 
 
+def _remote_panel_delete_via_ssh(server: ManagedServer, path: str, timeout: int = 12) -> dict:
+    safe_path = json.dumps(path)
+    command = f"""python3 - <<'PY'
+import http.cookiejar
+import json
+import urllib.request
+
+base = 'http://127.0.0.1:18080'
+path = {safe_path}
+cj = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+def request_json(path, method='GET', body=None):
+    data = None if body is None else json.dumps(body).encode('utf-8')
+    headers = {{'Content-Type': 'application/json'}} if body is not None else {{}}
+    req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
+    with opener.open(req, timeout={int(timeout)}) as resp:
+        text = resp.read().decode('utf-8', 'replace')
+    return json.loads(text) if text else {{}}
+
+login = request_json('/api/login', 'POST', {{'username': 'admin', 'password': 'admin123'}})
+if not login.get('ok'):
+    raise SystemExit('login failed: ' + (login.get('error') or 'unknown'))
+result = request_json(path, 'DELETE')
+if result and not result.get('ok', True):
+    raise SystemExit(result.get('error') or 'remote delete failed')
+print(json.dumps(result or {{'ok': True}}, ensure_ascii=False))
+PY"""
+    ssh = _ssh_connect_managed_server(server, timeout=max(timeout, 12))
+    try:
+        code, out, err = _ssh_run(ssh, command, timeout=max(timeout + 20, 35))
+    finally:
+        ssh.close()
+    if code != 0:
+        raise RuntimeError((err or out or f"ssh panel delete exit {code}")[-1200:])
+    try:
+        return json.loads(out.strip() or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"SSH 删除返回不是 JSON: {out[:200]}") from exc
+
+
+def _remote_panel_delete_resilient(server: ManagedServer, path: str, timeout: int = 20) -> dict:
+    try:
+        return _remote_panel_delete(server, path, timeout=timeout)
+    except Exception:
+        return _remote_panel_delete_via_ssh(server, path, timeout=12)
+
+
 def _local_server_ips() -> set[str]:
     ips = {"127.0.0.1", "localhost"}
     host_ip = (request.host or "").split(":", 1)[0].strip()
@@ -712,7 +760,7 @@ def _create_on_managed_servers(session, server_ids: list[int], data: dict, count
                     return [], f"{server.ip}: 创建后出网验证失败：{verify_message}"
                 if not ok:
                     try:
-                        _remote_panel_delete(server, f"/api/users/{_remote_item_local_id(item)}")
+                        _remote_panel_delete_resilient(server, f"/api/users/{_remote_item_local_id(item)}")
                     except Exception:
                         pass
                     return [], f"{server.ip}: 创建后出网验证失败，已回滚本次创建：{verify_message}"
@@ -1026,7 +1074,9 @@ def _normalize_traffic_limit(value: str | None, default: str | None = None) -> s
 
 
 def _reload_proxy(session=None, line_ids=None):
-    return proxy_manager.reload_config_with_listener_sync(session, reason="user-inbound-change", line_ids=line_ids)
+    if hasattr(proxy_manager, "reload_config_with_listener_sync"):
+        return proxy_manager.reload_config_with_listener_sync(session, reason="user-inbound-change", line_ids=line_ids)
+    return proxy_manager.reload_config()
 
 
 def _is_inbound_instance(user: ProxyUser | None) -> bool:
@@ -2033,12 +2083,60 @@ def clean_expired():
         count = len(users)
         limit_ids = [user.id for user in users]
         affected_line_ids = [user.line_id for user in users]
+        errors = []
         for user in users:
             s.delete(user)
         s.commit()
-        _reload_proxy(s, affected_line_ids)
-        _clear_user_limits_background(limit_ids)
-        return jsonify({"ok": True, "data": {"deleted": count, "limit_clear_queued": len(limit_ids)}})
+        if users:
+            _reload_proxy(s, affected_line_ids)
+            _clear_user_limits_background(limit_ids)
+
+        servers = (
+            s.query(ManagedServer)
+            .filter(
+                ManagedServer.install_status == "installed",
+                (ManagedServer.silent_group.is_(None)) | (ManagedServer.silent_group == 0),
+            )
+            .order_by(ManagedServer.id)
+            .all()
+        )
+
+        def delete_expired_remote(server: ManagedServer):
+            deleted = 0
+            server_errors = []
+            try:
+                result = _remote_panel_get(server, "/api/users?local_only=1", timeout=8)
+            except Exception:
+                try:
+                    result = _remote_panel_get_via_ssh(server, "/api/users?local_only=1", timeout=12)
+                except Exception as exc:
+                    return 0, [f"{server.ip}: {exc}"]
+            for item in result.get("data") or []:
+                expire_raw = item.get("expire_at") or ""
+                if not expire_raw:
+                    continue
+                try:
+                    expire_at = datetime.fromisoformat(str(expire_raw).replace("Z", "+00:00")).replace(tzinfo=None)
+                except Exception:
+                    continue
+                if expire_at >= now:
+                    continue
+                try:
+                    user_id = _remote_item_local_id(item)
+                    _remote_panel_delete_resilient(server, f"/api/users/{user_id}")
+                    deleted += 1
+                except Exception as exc:
+                    server_errors.append(f"{server.ip}:{item.get('id')} {exc}")
+            return deleted, server_errors
+
+        if servers:
+            with ThreadPoolExecutor(max_workers=min(6, len(servers))) as executor:
+                futures = [executor.submit(delete_expired_remote, server) for server in servers]
+                for future in as_completed(futures):
+                    deleted, server_errors = future.result()
+                    count += deleted
+                    errors.extend(server_errors)
+        return jsonify({"ok": True, "data": {"deleted": count, "errors": errors, "limit_clear_queued": len(limit_ids)}})
     finally:
         s.close()
 
@@ -2093,7 +2191,7 @@ def batch_delete():
                                 break
                     except Exception:
                         pass
-                    _remote_panel_delete(server, f"/api/users/{user_id}")
+                    _remote_panel_delete_resilient(server, f"/api/users/{user_id}")
                     return True, "", detail
                 except Exception as exc:
                     return False, f"{server.ip}:{user_id} {exc}", detail
@@ -2660,7 +2758,7 @@ def _change_inbound_ip_one(s, data: dict, spec: dict, requested_ip: str = "") ->
         _reload_proxy(s, affected_line_ids)
         _clear_user_limits_background(limit_ids)
     else:
-        _remote_panel_delete(old_remote_server, f"/api/users/{_remote_item_local_id(old_remote_item)}")
+        _remote_panel_delete_resilient(old_remote_server, f"/api/users/{_remote_item_local_id(old_remote_item)}")
 
     output = _change_ip_output(spec, new_ip)
     created_detail = _format_log_user_detail(created_rows[0], new_ip)
