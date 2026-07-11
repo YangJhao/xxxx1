@@ -1,12 +1,13 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{% block title %}42IPwin 管理后台{% endblock %}</title>
+<title>红龙轻量管理</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/bootstrap.min.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap-icons/font/bootstrap-icons.min.css') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v=20260703-global-inbound-compact2">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}?v=20260706-fixed-shell">
+{% block styles %}{% endblock %}
 </head>
 <body>
 <aside class="sidebar">
@@ -32,7 +33,7 @@
     <div class="user"><i class="bi bi-person-circle"></i> {{ admin or 'admin' }}</div>
     <div class="app-version">v{{ app_version or '1.0.0.3' }}</div>
     <button id="btnLogout" class="btn btn-sm btn-outline-light w-100 mt-2">
-      <i class="bi bi-box-arrow-right"></i> 退出
+      <i class="bi bi-box-arrow-right"></i> 退出登录
     </button>
   </div>
 </aside>

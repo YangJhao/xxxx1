@@ -117,6 +117,7 @@
       <button class="mini-btn" id="btnFirstPage"><i class="bi bi-chevron-bar-left"></i></button>
       <button class="mini-btn" id="btnPrevPage"><i class="bi bi-chevron-left"></i></button>
       <span class="page-number" id="pageNumber">1 / 1</span>
+      <label class="page-jump">跳页 <input id="pageJump" type="number" min="1" value="1"></label>
       <button class="mini-btn" id="btnNextPage"><i class="bi bi-chevron-right"></i></button>
       <button class="mini-btn" id="btnLastPage"><i class="bi bi-chevron-bar-right"></i></button>
     </div>
@@ -192,6 +193,9 @@
               <input class="form-check-input" type="checkbox" id="checkAllCreateNodes" checked>
               <span>全选可用节点</span>
             </label>
+            <select class="form-select node-group-select" id="createServerGroupFilter" aria-label="创建节点分组选择">
+              <option value="">全部分组</option>
+            </select>
             <strong id="availableNodeCount">可用 0 个</strong>
           </div>
           <select class="form-select d-none" id="userLine" multiple size="6" required></select>
@@ -450,9 +454,31 @@ let lastCreateResultCsv = '';
 let lastCreateResultRows = [];
 let pendingBatchLimitIds = [];
 let pendingBatchDeleteIds = [];
+let pendingRenewIds = [];
 let createPickerManual = false;
 const IS_LITE_MODE = {{ 'true' if is_lite_mode else 'false' }};
 const PROTO_LABELS = { socks5: 'SK5', http: 'HTTP', ss: 'SS', vless: 'VLESS', vmess: 'VMess', trojan: 'Trojan', hysteria2: 'HY2', wireguard: 'WG' };
+
+function isPublicIp(ip) {
+  const text = String(ip || '').trim();
+  if (!text || text === '0.0.0.0' || text.startsWith('0.')) return false;
+  const parts = text.split('.').map(x => Number(x));
+  if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const [a, b] = parts;
+  if (a === 10 || a === 127 || a >= 224) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 168) return false;
+  return true;
+}
+
+function sortByInboundThenIp(items) {
+  return items.slice().sort((a, b) => {
+    const diff = Number(a.inboundCount || 0) - Number(b.inboundCount || 0);
+    if (diff) return diff;
+    return String(a.ip || '').localeCompare(String(b.ip || ''), 'zh-CN', { numeric: true });
+  });
+}
 
 
 function syncNodePickerFromSelect() {
@@ -513,12 +539,40 @@ function visibleManagedServers() {
   return (allManagedServers || [])
     .filter(server => !serverMatchesExclude(server))
     .filter(server => !server.is_local)
+    .filter(server => server.install_status === 'installed' && server.status !== 'error')
+    .filter(server => !server.silent_group)
     .slice()
     .sort((a, b) => {
       const diff = Number(a.inbound_count || 0) - Number(b.inbound_count || 0);
       if (diff) return diff;
       return String(a.ip || '').localeCompare(String(b.ip || ''), 'zh-CN', { numeric: true });
     });
+}
+
+function serverGroupValue(server) {
+  const group = String(server.group_name || '').trim();
+  return group || '__ungrouped__';
+}
+
+function serverGroupLabel(value) {
+  return value === '__ungrouped__' ? '未分组' : value;
+}
+
+function selectedCreateServerGroup() {
+  return $('#createServerGroupFilter').val() || '';
+}
+
+function refreshCreateServerGroupFilter() {
+  const select = $('#createServerGroupFilter');
+  if (!select.length) return;
+  const current = select.val() || '';
+  const values = [...new Set(visibleManagedServers().map(serverGroupValue))].sort((a, b) => {
+    if (a === '__ungrouped__') return 1;
+    if (b === '__ungrouped__') return -1;
+    return String(a).localeCompare(String(b), 'zh-CN', { numeric: true });
+  });
+  select.html('<option value="">全部分组</option>' + values.map(value => `<option value="${escapeHtml(value)}">${escapeHtml(serverGroupLabel(value))}</option>`).join(''));
+  if (values.includes(current)) select.val(current);
 }
 
 function canUseLocalLite() {
@@ -546,11 +600,13 @@ function renderCreateNodePicker(options = {}) {
   const preserveSelection = Boolean(options.preserveSelection);
   const previousValues = preserveSelection ? selectedLineValues() : [];
   const box = $('#nodePickerList').empty();
-  const showLocalLite = canUseLocalLite() && !localMatchesExclude();
+  refreshCreateServerGroupFilter();
+  const groupFilter = selectedCreateServerGroup();
+  const showLocalLite = canUseLocalLite() && !localMatchesExclude() && !groupFilter;
   const localIp = localServerIp || location.hostname || '\u672c\u673a\u516c\u7f51 IP';
   if (allManagedServers.length) {
     const nodes = [];
-    if (showLocalLite) {
+    if (showLocalLite && isPublicIp(localIp)) {
       const localServer = (allManagedServers || []).find(server => server.is_local || String(server.ip || '') === String(localIp));
       const inboundCount = localServer ? Number(localServer.inbound_count || 0) : (allUsers || []).filter(user => !String(user.id || '').startsWith('remote:')).length;
       nodes.push({
@@ -561,7 +617,10 @@ function renderCreateNodePicker(options = {}) {
         local: true,
       });
     }
-    visibleManagedServers().forEach(server => {
+    visibleManagedServers()
+      .filter(server => isPublicIp(server.ip))
+      .filter(server => !groupFilter || serverGroupValue(server) === groupFilter)
+      .forEach(server => {
       const state = server.install_status === 'installed' ? '\u5df2\u5b89\u88c5' : (server.status || 'unknown');
       const inboundCount = Number(server.inbound_count || 0);
       const assignments = (server.inbound_assignments || []).slice(0, 6).join('  ');
@@ -574,13 +633,9 @@ function renderCreateNodePicker(options = {}) {
         local: false,
       });
     });
-    nodes.sort((a, b) => {
-      const diff = Number(a.inboundCount || 0) - Number(b.inboundCount || 0);
-      if (diff) return diff;
-      return String(a.ip || '').localeCompare(String(b.ip || ''), 'zh-CN', { numeric: true });
-    });
-    $('#availableNodeCount').text(`\u53ef\u7528 ${nodes.length} \u4e2a`);
-    nodes.forEach(node => {
+    const sortedNodes = sortByInboundThenIp(nodes);
+    $('#availableNodeCount').text(`\u53ef\u7528 ${sortedNodes.length} \u4e2a`);
+    sortedNodes.forEach(node => {
       box.append(`
         <label class="node-picker-card active${node.local ? ' local-node-card' : ''}" data-value="${escapeHtml(node.value)}">
           <input class="form-check-input" type="checkbox" checked>
@@ -589,18 +644,19 @@ function renderCreateNodePicker(options = {}) {
         </label>
       `);
     });
-    const availableValues = nodes.map(node => node.value);
+    const availableValues = sortedNodes.map(node => node.value);
     const nextValues = preserveSelection
       ? previousValues.filter(value => availableValues.includes(value))
       : availableValues;
     setCreateNodeSelection(nextValues);
     return;
   }
-  const optionsList = allLines.map(line => ({
+  const optionsList = sortByInboundThenIp(allLines.filter(line => isPublicIp(line.public_ip)).map(line => ({
     value: String(line.id),
     ip: line.public_ip,
+    inboundCount: Number(line.user_count || 0),
     sub: `\u5165\u7ad9 ${Number(line.user_count || 0)} \u4e2a`,
-  }));
+  })));
   if (!optionsList.length && showLocalLite) {
     $('#availableNodeCount').text('\u53ef\u7528 1 \u4e2a');
     box.append(`
@@ -636,7 +692,11 @@ async function loadLines() {
       allLines = [];
       const sel = $('#userLine').empty().append('<option value="all_servers">全部服务器</option>');
       if (canUseLocalLite()) sel.append('<option value="lite">本机</option>');
-      visibleManagedServers().forEach(server => {
+      visibleManagedServers().filter(server => isPublicIp(server.ip)).sort((a, b) => {
+        const diff = Number(a.inbound_count || 0) - Number(b.inbound_count || 0);
+        if (diff) return diff;
+        return String(a.ip || '').localeCompare(String(b.ip || ''), 'zh-CN', { numeric: true });
+      }).forEach(server => {
         const state = server.install_status === 'installed' ? '已安装' : (server.status || 'unknown');
         const inboundCount = Number(server.inbound_count || 0);
         const assignments = (server.inbound_assignments || []).slice(0, 3).join(' ');
@@ -658,7 +718,11 @@ async function loadLines() {
     }
     return toast(r.error || '线路读取失败', 'error');
   }
-  allLines = r.data || [];
+  allLines = (r.data || []).filter(line => isPublicIp(line.public_ip)).sort((a, b) => {
+    const diff = Number(a.user_count || 0) - Number(b.user_count || 0);
+    if (diff) return diff;
+    return String(a.public_ip || '').localeCompare(String(b.public_ip || ''), 'zh-CN', { numeric: true });
+  });
   if (IS_LITE_MODE && !allLines.length) {
     $('#userLine').html('<option value="lite" selected>本机公网 IP</option>');
     $('.line-field').removeClass('d-none').show();
@@ -709,8 +773,15 @@ function refreshOwnerOptions() {
 }
 
 async function loadUsers() {
-  const r = await api.get(`/api/users?_=${Date.now()}`);
-  if (!r.ok) return toast(r.error || '节点读取失败', 'error');
+  const previous = allUsers.slice();
+  const r = await api.get(`/api/users?include_remote=1&_=${Date.now()}`);
+  if (!r.ok) {
+    if (previous.length) {
+      allUsers = previous;
+      renderUsers();
+    }
+    return toast(r.error || '节点读取失败', 'error');
+  }
   allUsers = r.data || [];
   refreshOwnerOptions();
   updateNodeStats();
@@ -741,20 +812,27 @@ function portFor(u) {
 
 function outputLine(u) {
   const expire = formatDate(u.expire_at);
+  const proto = (u.protocol || 'socks5').toLowerCase();
   const appendExpire = (text) => {
     const value = String(text || '').trim();
     if (!value) return '';
     return expire && !value.endsWith(`|${expire}`) ? `${value}|${expire}` : value;
   };
-  if (['hysteria2', 'vmess'].includes(u.protocol) && u.uri) return appendExpire(u.uri);
+  if (u.protocol === 'vmess') {
+    const link = protocolUri(u);
+    const ip = u.line_ip || '';
+    const port = portFor(u);
+    return `${link}|${ip}|${port}|${expire}`;
+  }
+  if (u.protocol === 'hysteria2' && u.uri) return appendExpire(u.uri);
   if (u.field) return appendExpire(u.field);
   const ip = u.line_ip || '';
   const port = portFor(u);
-  if (u.protocol === 'vmess') return appendExpire(protocolUri(u));
-  if (u.protocol === 'hysteria2') return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
-  if (u.protocol === 'wireguard') return `${ip}|${port}|wireguard|${u.username || ''}|${expire}`;
-  if (u.protocol === 'ss') return `${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}|${expire}`;
-  return `${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
+  if (u.protocol === 'vmess') return `${protocolUri(u)}|${ip}|${port}|${expire}`;
+  if (u.protocol === 'hysteria2') return `hysteria2|${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
+  if (u.protocol === 'wireguard') return `wireguard|${ip}|${port}|${u.username || ''}|${expire}`;
+  if (u.protocol === 'ss') return `ss|${ip}|${port}|${u.ss_method || 'aes-256-gcm'}|${u.ss_password || u.password || ''}|${expire}`;
+  return `${proto}|${ip}|${port}|${u.username || ''}|${u.password || ''}|${expire}`;
 }
 
 function protocolUri(u) {
@@ -816,6 +894,52 @@ function createResultCsv(rows) {
   return [header.join(','), ...body].join('\n');
 }
 
+function nodeExportCsv(rows) {
+  const header = [
+    'IP',
+    '备注',
+    '项目',
+    '操作人',
+    '用户',
+    '协议',
+    '连接数',
+    '端口',
+    '账号',
+    '密码',
+    '限速',
+    '流量限制',
+    '流量已用',
+    '到期日期',
+    '状态',
+    '链接/连接信息'
+  ];
+  const body = (rows || []).map(u => {
+    const account = u.protocol === 'ss' ? (u.ss_method || 'aes-256-gcm') : (u.username || '');
+    const password = u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || '');
+    const used = (Number(u.bytes_in || 0) + Number(u.bytes_out || 0));
+    const state = nodeStatusOf(u).text || '';
+    return [
+      u.line_ip || '',
+      displayNote(u) || '',
+      u.project_name || u.line_name || '',
+      u.operator || '',
+      u.owner_name || u.username || '',
+      PROTO_LABELS[u.protocol] || u.protocol || '',
+      u.traffic_available ? (u.connections || 0) : '',
+      portFor(u),
+      account,
+      password,
+      u.speed_limit || '',
+      u.traffic_limit || '',
+      used ? formatBytes(used) : '',
+      formatDate(u.expire_at),
+      state,
+      outputLine(u)
+    ].map(csvEscape).join(',');
+  });
+  return [header.map(csvEscape).join(','), ...body].join('\n');
+}
+
 function showCreateResult(data) {
   const rows = data.created || [];
   lastCreateResultRows = rows;
@@ -868,20 +992,127 @@ function searchBlob(u) {
   ].map(v => String(v || '').toLowerCase()).join(' ');
 }
 
-function matchesStructuredTerm(u, term) {
-  const parts = String(term || '').toLowerCase().split('|').map(x => x.trim()).filter(Boolean);
-  if (!parts.length) return true;
-  const fields = [
-    String(u.line_ip || '').toLowerCase(),
-    String(portFor(u)).toLowerCase(),
-    String(u.protocol === 'ss' ? (u.ss_method || '') : (u.username || '')).toLowerCase(),
-    String(u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || '')).toLowerCase(),
-    String(formatDate(u.expire_at) || '').toLowerCase(),
-  ];
-  return parts.every((part, idx) => {
-    if (fields[idx] && fields[idx].includes(part)) return true;
-    return searchBlob(u).includes(part);
+function compactDate(value) {
+  return String(value || '').replace(/[^0-9]/g, '');
+}
+
+function decodeVmessLink(value) {
+  const text = String(value || '').trim();
+  if (!text.toLowerCase().startsWith('vmess://')) return null;
+  const raw = text.slice(8).split('|')[0].split(/\s+/)[0].trim();
+  if (!raw) return null;
+  try {
+    const padded = raw.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - raw.length % 4) % 4);
+    const decoded = atob(padded);
+    try {
+      return JSON.parse(decodeURIComponent(escape(decoded)));
+    } catch (e) {
+      return JSON.parse(decoded);
+    }
+  } catch (e) {
+    return null;
+  }
+}
+
+function parseSearchTerm(term) {
+  const original = String(term || '').trim();
+  const raw = original.toLowerCase();
+  const originalParts = original.split('|').map(x => x.trim()).filter(Boolean);
+  const parts = raw.split('|').map(x => x.trim()).filter(Boolean);
+  const tokens = originalParts.length ? originalParts : [original].filter(Boolean);
+  const ips = [];
+  const ports = [];
+  const dates = [];
+  const generic = [];
+  let vmess = null;
+  const protoNames = new Set(['socks5', 'sk5', 'http', 'ss', 'shadowsocks', 'vless', 'vmess', 'vm', 'trojan', 'hysteria2', 'hy2', 'wireguard', 'wg']);
+  const addUnique = (arr, value) => {
+    const text = String(value || '').trim().toLowerCase();
+    if (text && !arr.includes(text)) arr.push(text);
+  };
+
+  tokens.forEach(token => {
+    const originalValue = String(token || '').trim();
+    const value = originalValue.toLowerCase();
+    if (!value) return;
+    const decoded = decodeVmessLink(originalValue);
+    if (decoded) {
+      vmess = decoded;
+      addUnique(ips, decoded.add || decoded.host || decoded.address);
+      addUnique(ports, decoded.port);
+      addUnique(generic, decoded.id);
+      addUnique(generic, decoded.ps);
+      return;
+    }
+    const ipMatches = value.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+    if (ipMatches.length) {
+      ipMatches.forEach(ip => addUnique(ips, ip));
+      const withoutIps = value.replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '').trim();
+      if (withoutIps && withoutIps !== value) addUnique(generic, withoutIps);
+      return;
+    }
+    if (/^20\d{2}-?\d{2}-?\d{2}$/.test(value)) {
+      addUnique(dates, compactDate(value));
+      return;
+    }
+    if (/^\d{2,5}$/.test(value)) {
+      const n = Number(value);
+      if (n > 0 && n <= 65535) {
+        addUnique(ports, value);
+        return;
+      }
+    }
+    if (protoNames.has(value)) return;
+    addUnique(generic, value);
   });
+
+  return { raw, parts, ips, ports, dates, generic, vmess };
+}
+
+function nodeSearchFields(u) {
+  const expire = formatDate(u.expire_at);
+  const uri = protocolUri(u);
+  return {
+    hay: searchBlob(u),
+    ip: String(u.line_ip || '').toLowerCase(),
+    port: String(portFor(u) || '').toLowerCase(),
+    expire: String(expire || '').toLowerCase(),
+    expireCompact: compactDate(expire),
+    protocol: String(u.protocol || '').toLowerCase(),
+    username: String(u.username || '').toLowerCase(),
+    password: String(u.protocol === 'ss' ? (u.ss_password || u.password || '') : (u.password || '')).toLowerCase(),
+    method: String(u.ss_method || '').toLowerCase(),
+    uri: String(uri || '').toLowerCase(),
+  };
+}
+
+function matchesSearchTerm(u, term) {
+  const q = parseSearchTerm(term);
+  if (!q.raw) return true;
+  const f = nodeSearchFields(u);
+  if (f.hay.includes(q.raw)) return true;
+  if (q.ips.length && !q.ips.every(ip => f.ip === ip || f.hay.includes(ip))) return false;
+  if (q.ports.length && !q.ports.every(port => f.port === port || f.hay.includes(`|${port}|`) || f.hay.includes(`:${port}`))) return false;
+  if (q.dates.length && !q.dates.every(date => f.expireCompact.includes(date) || f.hay.includes(date))) return false;
+  if (q.vmess) {
+    const vmId = String(q.vmess.id || '').toLowerCase();
+    const vmPs = String(q.vmess.ps || '').toLowerCase();
+    if (vmId && vmId !== f.password && !f.hay.includes(vmId)) return false;
+    if (vmPs && vmPs !== f.username && !f.hay.includes(vmPs)) return false;
+    if (f.protocol && f.protocol !== 'vmess') return false;
+  }
+  return q.generic.every(part => {
+    if (!part) return true;
+    return f.hay.includes(part)
+      || f.username.includes(part)
+      || f.password.includes(part)
+      || f.method.includes(part)
+      || f.uri.includes(part);
+  });
+}
+
+function matchesStructuredTerm(u, term) {
+  return matchesSearchTerm(u, term);
 }
 
 function matchedUsers() {
@@ -895,8 +1126,7 @@ function matchedUsers() {
   if (statusFilter === 'expired') rows = rows.filter(u => isExpired(u));
   if (terms.length) {
     rows = rows.filter(u => {
-      const hay = searchBlob(u);
-      return terms.some(term => term.includes('|') ? matchesStructuredTerm(u, term) : hay.includes(term));
+      return terms.some(term => matchesSearchTerm(u, term));
     });
   }
   return rows.slice().sort((a, b) => {
@@ -922,6 +1152,7 @@ function updatePagination(meta) {
   const to = Math.min(meta.start + meta.pageRows.length, total);
   $('#pageSummary').text(total ? `第 ${from}-${to} 条，共 ${total} 条` : '共 0 条');
   $('#pageNumber').text(`${currentPage} / ${meta.totalPages}`);
+  $('#pageJump').attr('max', meta.totalPages).val(currentPage);
   $('#btnFirstPage, #btnPrevPage').prop('disabled', currentPage <= 1);
   $('#btnNextPage, #btnLastPage').prop('disabled', currentPage >= meta.totalPages);
   updateGroupControlStrip(meta);
@@ -1052,6 +1283,11 @@ function renderUsers() {
 
 function selectedIds() { return $('.row-check:checked').map((_, el) => String(el.value || '')).get().filter(Boolean); }
 function changePage(page) { currentPage = page; renderUsers(); }
+function jumpToPage() {
+  const totalPages = pagedUsers().totalPages;
+  const value = parseInt($('#pageJump').val() || currentPage, 10) || currentPage;
+  changePage(Math.min(totalPages, Math.max(1, value)));
+}
 
 function openChangeIpModal() {
   const ids = selectedIds();
@@ -1159,13 +1395,17 @@ function idsFromText(text) {
 }
 
 function combinedIds(textSelector) {
-  const checked = textSelector === '#batchDeleteText' && pendingBatchDeleteIds.length ? pendingBatchDeleteIds : selectedIds();
+  const checked = textSelector === '#batchDeleteText' && pendingBatchDeleteIds.length
+    ? pendingBatchDeleteIds
+    : (textSelector === '#renewText' && pendingRenewIds.length ? pendingRenewIds : selectedIds());
   const pasted = idsFromText($(textSelector).val());
   return [...new Set(checked.concat(pasted))];
 }
 
 function setBatchHint(hintSelector, textSelector = null) {
-  const checkedIds = textSelector === '#batchDeleteText' && pendingBatchDeleteIds.length ? pendingBatchDeleteIds : selectedIds();
+  const checkedIds = textSelector === '#batchDeleteText' && pendingBatchDeleteIds.length
+    ? pendingBatchDeleteIds
+    : (textSelector === '#renewText' && pendingRenewIds.length ? pendingRenewIds : selectedIds());
   const checked = checkedIds.length;
   const pasted = textSelector ? idsFromText($(textSelector).val()).length : 0;
   const total = textSelector ? combinedIds(textSelector).length : checked;
@@ -1210,6 +1450,7 @@ function openAssignProjectModal() {
 }
 
 function openRenewModal() {
+  pendingRenewIds = selectedIds();
   $('#renewText').val('');
   $('#renewDays').val(30);
   setBatchHint('#renewHint', '#renewText');
@@ -1425,7 +1666,13 @@ async function saveUser() {
       return;
     }
     const r = await api.post('/api/users', data);
-    if (!r.ok) return toast(r.error || '创建失败', 'error', 6000);
+    if (!r.ok) {
+      const result = r.data || {};
+      const errors = result.errors || (r.error ? [r.error] : []);
+      showCreateResult({ ...result, errors });
+      const failCount = errors.length || result.failed_count || 1;
+      return toast(`创建失败：失败 ${failCount} 个，详情看结果框`, 'error', 5000);
+    }
     const limitQueued = r.data.limit_queued || 0;
     toast(`创建成功 ${r.data.created_count || 0} 个节点${limitQueued ? `，${limitQueued} 个限速后台下发中` : ''}`, 'success', 4500);
     bootstrap.Modal.getInstance(document.getElementById('userModal')).hide();
@@ -1550,6 +1797,7 @@ async function renewNodes() {
   if (!r.ok) return toast(r.error || '续费失败', 'error');
   toast(`已续费 ${r.data.updated || 0} 个节点`, 'success');
   bootstrap.Modal.getInstance(document.getElementById('renewModal'))?.hide();
+  pendingRenewIds = [];
   const renewed = r.data.users || [];
   await loadUsers();
   await copyRows(renewed, '续费结果');
@@ -1569,10 +1817,11 @@ function updateNodeStats() {
 function exportText() {
   const ids = selectedIds();
   const source = ids.length ? allUsers.filter(u => ids.map(String).includes(String(u.id))) : matchedUsers();
-  const rows = source.map(outputLine);
-  if (!rows.length) return toast('没有可导出的数据', 'error');
-  const proto = $('#filterProtocol').val() || 'all';
-  downloadText(`${proto}-proxy.txt`, rows.join('\n'));
+  if (!source.length) return toast('没有可导出的数据', 'error');
+  const csv = nodeExportCsv(source);
+  const scope = ids.length ? `selected-${source.length}` : `all-${source.length}`;
+  downloadText(`nodes-export-${scope}.csv`, csv, 'text/csv;charset=utf-8');
+  toast(`已导出 ${source.length} 条完整表格数据`, 'success', 3500);
 }
 
 async function copyNode(id, btn) {
@@ -1859,6 +2108,10 @@ $(async () => {
   $('#userExclude,#projectExclude').on('input change', function() {
     renderCreateNodePicker({ preserveSelection: createPickerManual });
   });
+  $('#createServerGroupFilter').on('change', function() {
+    createPickerManual = false;
+    renderCreateNodePicker();
+  });
   $('#checkAllCreateNodes').on('change', function() {
     const checked = this.checked;
     createPickerManual = !checked;
@@ -1889,6 +2142,8 @@ $(async () => {
   $('#btnPrevPage').on('click', () => changePage(currentPage - 1));
   $('#btnNextPage').on('click', () => changePage(currentPage + 1));
   $('#btnLastPage').on('click', () => changePage(pagedUsers().totalPages));
+  $('#pageJump').on('keydown', event => { if (event.key === 'Enter') jumpToPage(); });
+  $('#pageJump').on('change blur', jumpToPage);
   $('#checkAll').on('change', function() {
     $('.row-check').prop('checked', this.checked);
     setBatchHint('#batchDeleteHint', '#batchDeleteText');

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import ipaddress
 import pathlib
 import subprocess
 
@@ -49,6 +50,47 @@ def delete_source_rules(ip: str):
             break
 
 
+def default_gateway_for_iface(iface: str, ip: str) -> str:
+    proc = run(["ip", "route", "show", "default", "dev", iface])
+    for line in (proc.stdout or "").splitlines():
+        words = line.split()
+        if "via" in words:
+            return words[words.index("via") + 1]
+    proc = run(["ip", "route", "get", "1.1.1.1", "from", ip, "oif", iface])
+    words = (proc.stdout or "").split()
+    if "via" in words:
+        return words[words.index("via") + 1]
+    return ""
+
+
+def restore_source_route(row: dict):
+    iface = row.get("iface") or ""
+    ip = row.get("ip") or ""
+    table = row.get("table") or ""
+    priority = row.get("priority") or ""
+    if not iface or not ip or not table or not priority:
+        return False
+    router = row.get("router") or default_gateway_for_iface(iface, ip)
+    if not router:
+        print(f"[restore-macvlans] skip route {iface} {ip}: no gateway")
+        return False
+    run(["ip", "route", "flush", "table", str(table)])
+    network = row.get("network") or ""
+    if not network and row.get("prefix"):
+        try:
+            network = str(ipaddress.ip_network(f"{ip}/{row.get('prefix')}", strict=False))
+        except Exception:
+            network = ""
+    if network:
+        run(["ip", "route", "replace", network, "dev", iface, "src", ip, "table", str(table)])
+    proc = run(["ip", "route", "replace", "default", "via", router, "dev", iface, "src", ip, "table", str(table)])
+    if proc.returncode != 0:
+        run(["ip", "route", "replace", "default", "via", router, "dev", iface, "src", ip, "table", str(table), "onlink"], check=True)
+    delete_source_rules(ip)
+    run(["ip", "rule", "add", "from", f"{ip}/32", "priority", str(priority), "table", str(table)], check=True)
+    return True
+
+
 def load_state() -> dict:
     for path in STATE_FILES:
         if path.exists():
@@ -84,30 +126,11 @@ def restore_row(row: dict):
     if not ensure_link(row):
         return False
     iface = row.get("iface") or ""
-    ip = row.get("ip") or ""
-    prefix = row.get("prefix") or ""
-    table = str(row.get("table") or "")
-    router = row.get("router") or ""
-    network = row.get("network") or ""
-    priority = str(row.get("priority") or "")
-    if not ip or not prefix:
-        for cidr in current_cidrs(iface):
-            run(["ip", "addr", "del", cidr, "dev", iface])
-        return True
-    wanted = f"{ip}/{prefix}"
-    for cidr in current_cidrs(iface):
-        if cidr != wanted:
-            run(["ip", "addr", "del", cidr, "dev", iface])
-    run(["ip", "addr", "replace", wanted, "dev", iface], check=True)
-    if table:
-        run(["ip", "route", "flush", "table", table])
-        if network:
-            run(["ip", "route", "replace", network, "dev", iface, "src", ip, "table", table], check=True)
-        if router:
-            run(["ip", "route", "replace", "default", "via", router, "dev", iface, "src", ip, "table", table], check=True)
-        delete_source_rules(ip)
-        if priority:
-            run(["ip", "rule", "add", "from", f"{ip}/32", "table", table, "priority", priority], check=True)
+    internal_ip = row.get("internal_ip") or ""
+    internal_prefix = row.get("internal_prefix") or 32
+    if internal_ip:
+        run(["ip", "addr", "replace", f"{internal_ip}/{internal_prefix}", "dev", iface], check=True)
+    restore_source_route(row)
     return True
 
 

@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>登录 - 42IPwin</title>
+<title>红龙轻量管理</title>
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap/bootstrap.min.css') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap-icons/font/bootstrap-icons.min.css') }}">
 <style>
@@ -63,21 +63,21 @@
 <body>
 <div class="login-card">
   <h1><i class="bi bi-hdd-network-fill"></i> 42IPwin</h1>
-  <div class="subtitle">多IP SOCKS5 代理 · 管理后台</div>
+  <div class="subtitle">澶欼P SOCKS5 浠ｇ悊 路 绠＄悊鍚庡彴</div>
   <div id="err" class="alert-err"></div>
   <form id="loginForm">
     <div class="mb-3 input-icon">
       <i class="bi bi-person"></i>
-      <input type="text" class="form-control" id="username" placeholder="账号" value="admin" required>
+      <input type="text" class="form-control" id="username" placeholder="璐﹀彿" value="admin" required>
     </div>
     <div class="mb-3 input-icon">
       <i class="bi bi-lock"></i>
-      <input type="password" class="form-control" id="password" placeholder="密码" required>
+      <input type="password" class="form-control" id="password" placeholder="瀵嗙爜" required>
     </div>
-    <button type="submit" class="btn btn-login">登 录</button>
+    <button type="submit" class="btn btn-login">鐧?褰?/button>
   </form>
   <div class="subtitle" style="margin-top: 24px; margin-bottom: 0;">
-    默认账号: <code style="color:#4ea1ff">admin / admin123</code>
+    榛樿璐﹀彿: <code style="color:#4ea1ff">admin / admin123</code>
   </div>
 </div>
 <script>
@@ -97,11 +97,11 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     if (d.ok) {
       window.location.href = '/dashboard';
     } else {
-      err.textContent = d.error || '登录失败';
+      err.textContent = d.error || '鐧诲綍澶辫触';
       err.style.display = 'block';
     }
   } catch (e) {
-    err.textContent = '网络错误: ' + e.message;
+    err.textContent = '缃戠粶閿欒: ' + e.message;
     err.style.display = 'block';
   }
 });

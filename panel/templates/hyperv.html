@@ -11,15 +11,88 @@
 
 <div class="mgmt-actions hv-bulkbar">
   <button class="btn btn-primary btn-sm" onclick="openCreateModal()"><i class="bi bi-plus-lg"></i> 批量新建</button>
-  <button class="btn btn-outline-primary btn-sm" onclick="openImageModal()"><i class="bi bi-disc"></i> 镜像导入</button>
+  <button class="btn btn-outline-primary btn-sm" id="btnEnsureVmLan" onclick="ensureVmLanSwitch()"><i class="bi bi-hdd-network"></i> 初始化 VM 内网交换机</button>
+  <button class="btn btn-outline-success btn-sm" id="btnPrepareDebianImage" onclick="prepareDebianImage()"><i class="bi bi-cloud-download"></i> 准备 Debian 镜像</button>
+  <button class="btn btn-outline-info btn-sm" id="btnInstallIkuai" onclick="openIkuaiModal()"><i class="bi bi-router"></i> 安装 iKuai</button>
+  <button class="btn btn-outline-danger btn-sm" onclick="clearAllVms()"><i class="bi bi-trash3"></i> 清空虚拟机</button>
+  <button class="btn btn-outline-success btn-sm" onclick="batchStartStaged()"><i class="bi bi-play-fill"></i> 批量开机</button>
   <button class="btn btn-outline-warning btn-sm" onclick="batchAction('restart')"><i class="bi bi-arrow-clockwise"></i> 批量重启</button>
   <button class="btn btn-outline-danger btn-sm" onclick="batchAction('shutdown')"><i class="bi bi-power"></i> 批量关机</button>
   <button class="btn btn-outline-danger btn-sm" onclick="batchAction('reset')"><i class="bi bi-bootstrap-reboot"></i> 批量重置系统</button>
   <button class="btn btn-outline-primary btn-sm" onclick="openPasswordModal()"><i class="bi bi-key"></i> 批量重置密码</button>
+  <button class="btn btn-outline-success btn-sm" onclick="batchRefreshPublicIp()"><i class="bi bi-diagram-3"></i> 批量更新映射</button>
+  <button class="btn btn-outline-info btn-sm" onclick="openBatchPortproxy()"><i class="bi bi-diagram-2"></i> 开放端口</button>
+  <button class="btn btn-danger btn-sm" onclick="batchAction('delete')"><i class="bi bi-trash"></i> 批量删除</button>
   <span class="text-muted small ms-auto" id="hvHost">-</span>
 </div>
 
 <div class="alert alert-warning d-none" id="pveUnavailable"></div>
+
+<div id="imageProgressBox" class="line-op-status d-none" style="margin-bottom:16px;">
+  <div class="d-flex justify-content-between small mb-1">
+    <span id="imageProgressText">-</span>
+    <span id="imageProgressPercent">0%</span>
+  </div>
+  <div class="progress" style="height:10px;background:#111827;">
+    <div id="imageProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" style="width:0%"></div>
+  </div>
+</div>
+
+<div class="modal fade" id="ikuaiModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">安装 iKuai 虚拟机</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="create-form-grid hv-config-grid">
+          <div>
+            <label class="form-label">虚拟机名称</label>
+            <input class="form-control" id="ikuaiName" value="iKuai">
+          </div>
+          <div>
+            <label class="form-label">使用镜像</label>
+            <select class="form-select" id="ikuaiImage">
+              <option value="">请选择 iKuai ISO/VHD/VHDX 镜像</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">机器配置</label>
+            <div class="form-control" style="display:flex;align-items:center;">固定 4 核 / 4G / 8G 硬盘</div>
+          </div>
+          <div>
+            <label class="form-label">iKuai 内网地址</label>
+            <div class="form-control" style="display:flex;align-items:center;">192.168.9.253</div>
+          </div>
+          <div>
+            <label class="form-label">LAN 交换机</label>
+            <select class="form-select" id="ikuaiLanSwitch">
+              <option value="VM-LAN">VM-LAN</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">创建后启动</label>
+            <select class="form-select" id="ikuaiAutoStart">
+              <option value="false">否</option>
+              <option value="true">是</option>
+            </select>
+          </div>
+        </div>
+        <div class="field mt-3">
+          <label class="form-label">WAN 交换机（可选，每行一个）</label>
+          <textarea class="form-control" id="ikuaiWanSwitches" rows="3" placeholder="例如：WAN5-MAC01&#10;WAN6-MAC02&#10;WAN7-MAC03"></textarea>
+          <div class="form-hint mt-2">安装提示按 iKuai 内网地址 192.168.9.253 记录；这里只给 iKuai VM 增加网卡并接到选择的交换机，不修改现有 Windows 公网 IP、拨号、WAN MAC 或 vEthernet 配置。</div>
+        </div>
+        <pre id="ikuaiStatus" class="mt-3 p-3 rounded d-none" style="max-height:220px;overflow:auto;background:#05070b;color:#d7f7e8;border:1px solid rgba(255,255,255,.12);white-space:pre-wrap;"></pre>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-primary" id="btnInstallIkuaiSubmit"><i class="bi bi-router"></i> 开始安装</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="modal fade" id="createModal" tabindex="-1">
   <div class="modal-dialog modal-lg modal-dialog-centered">
@@ -31,24 +104,31 @@
       <div class="modal-body">
         <div class="create-form-grid hv-config-grid">
           <div>
+            <label class="form-label">创建模式</label>
+            <select class="form-select" id="newMode">
+              <option value="ip_map">42IP 映射创建</option>
+              <option value="normal">普通连续编号</option>
+            </select>
+          </div>
+          <div>
             <label class="form-label">名称前缀</label>
-            <input class="form-control" id="newPrefix" value="hv">
+            <input class="form-control" id="newPrefix" value="Debian">
           </div>
           <div>
             <label class="form-label">新建数量</label>
             <input class="form-control" type="number" min="1" max="200" id="newCount" value="1">
           </div>
-          <div>
-            <label class="form-label">起始编号</label>
+          <div id="startIndexField">
+            <label class="form-label">起始编号 / 映射序号</label>
             <input class="form-control" type="number" min="1" id="newStartIndex" value="1">
           </div>
           <div>
             <label class="form-label">CPU 核数</label>
-            <input class="form-control" type="number" min="1" max="64" id="newCpu" value="2">
+            <input class="form-control" type="number" min="1" max="64" id="newCpu" value="1">
           </div>
           <div>
             <label class="form-label">启动内存 MB</label>
-            <input class="form-control" type="number" min="128" step="128" id="newMemory" value="2048">
+            <input class="form-control" type="number" min="128" step="128" id="newMemory" value="1024">
           </div>
           <div>
             <label class="form-label">硬盘 GB</label>
@@ -61,11 +141,15 @@
               <option value="1">第 1 代</option>
             </select>
           </div>
-          <div>
+          <div id="newSwitchField">
             <label class="form-label">虚拟交换机</label>
             <select class="form-select" id="newSwitch">
               <option value="">不连接</option>
             </select>
+          </div>
+          <div id="mappedSwitchHint" class="d-none">
+            <label class="form-label">交换机映射</label>
+            <div class="form-control" style="display:flex;align-items:center;">自动：WAN5/WAN6/WAN7 公网 IP 对应，VM 接 VM-LAN 内网交换机</div>
           </div>
           <div>
             <label class="form-label">使用镜像</label>
@@ -80,8 +164,47 @@
               <option value="true">是</option>
             </select>
           </div>
+          <div>
+            <label class="form-label">写入系统配置</label>
+            <select class="form-select" id="newConfigureGuest">
+              <option value="true">写入 root 密码和静态 IP</option>
+              <option value="false">只创建 VM</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">root 密码</label>
+            <input class="form-control" type="text" id="newRootPassword" autocomplete="off" spellcheck="false" placeholder="用于 cloud-init 初始化">
+          </div>
+          <div>
+            <label class="form-label">VM 起始内网 IP</label>
+            <input class="form-control" id="newInternalStartIp" value="192.168.9.101">
+          </div>
+          <div class="advanced-network-field">
+            <label class="form-label">VM 内网段</label>
+            <input class="form-control" id="newInternalBase" value="192.168.9">
+          </div>
+          <div class="advanced-network-field">
+            <label class="form-label">起始内网尾号</label>
+            <input class="form-control" type="number" min="2" max="254" id="newInternalStart" value="101">
+          </div>
+          <div class="advanced-network-field">
+            <label class="form-label">VM 内网网关</label>
+            <input class="form-control" id="newInternalGateway" value="192.168.9.1">
+          </div>
+          <div class="advanced-network-field">
+            <label class="form-label">VM DNS</label>
+            <input class="form-control" id="newInternalDns" value="1.1.1.1">
+          </div>
+          <div>
+            <label class="form-label">SSH 端口</label>
+            <input class="form-control" type="number" min="1" max="65000" id="newSshPort" value="22">
+          </div>
         </div>
-        <div class="form-hint mt-3">将按“前缀-编号”创建，例如 hv-001、hv-002。这里创建的是空白 VHDX 虚拟机，装系统/挂镜像需要后续再接入镜像流程。</div>
+        <div class="form-hint mt-3">
+          42IP 映射模式会自动对应 WAN5/WAN6/WAN7 的 42 个公网 IP，VM 接 VM-LAN 内网交换机；默认 VM 内网为 192.168.9.101-142，网关为 192.168.9.1，DNS 为 1.1.1.1，SSH 使用你填写的统一端口，例如 公网IP:端口 -> VM内网IP:22。
+          <button type="button" class="mini-btn ms-2" id="btnToggleNetworkAdvanced">高级内网配置</button>
+        </div>
+        <pre id="deployStatus" class="mt-3 p-3 rounded d-none" style="max-height:220px;overflow:auto;background:#05070b;color:#d7f7e8;border:1px solid rgba(255,255,255,.12);white-space:pre-wrap;"></pre>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
@@ -130,7 +253,7 @@
           <th>内网 IP</th>
           <th>状态</th>
           <th>CPU</th>
-          <th>内存</th>
+          <th>内存(已用/配置)</th>
           <th>操作</th>
         </tr>
       </thead>
@@ -193,8 +316,28 @@
             </select>
           </div>
           <div>
+            <label class="form-label">规划公网 IP</label>
+            <input class="form-control" id="cfgPublicIp" disabled>
+          </div>
+          <div>
+            <label class="form-label">来源宿主网卡</label>
+            <input class="form-control" id="cfgPublicSource" disabled>
+          </div>
+          <div>
+            <label class="form-label">公网网关</label>
+            <input class="form-control" id="cfgPublicGateway" disabled>
+          </div>
+          <div>
+            <label class="form-label">公网 DNS</label>
+            <input class="form-control" id="cfgPublicDns" disabled>
+          </div>
+          <div>
+            <label class="form-label">WAN MAC</label>
+            <input class="form-control" id="cfgPublicMac" disabled>
+          </div>
+          <div>
             <label class="form-label">备注</label>
-            <input class="form-control" id="cfgNotes">
+            <textarea class="form-control" id="cfgNotes" rows="5"></textarea>
           </div>
         </div>
         <div class="form-hint mt-3">CPU、内存等配置通常需要虚拟机关闭后才能修改；运行中保存会由 Hyper-V 返回错误。</div>
@@ -217,11 +360,88 @@
       <div class="modal-body">
         <label class="form-label">新密码</label>
         <input class="form-control" type="password" id="newPassword" autocomplete="new-password">
-        <div class="form-hint mt-3">Hyper-V 主机不能直接修改虚拟机系统内密码，需要客户机脚本、集成代理或系统账号权限。这里会先提交请求并提示当前后端能力。</div>
+        <div class="form-hint mt-3">宿主机不能直接修改虚拟机系统内密码，需要客户机脚本、集成代理或系统账号权限。这里会先提交请求并提示当前后端能力。</div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
         <button class="btn btn-primary" id="btnResetPassword"><i class="bi bi-key"></i> 提交</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="sshModal" tabindex="-1">
+  <div class="modal-dialog modal-xl modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">SSH 终端</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="create-form-grid hv-config-grid">
+          <div>
+            <label class="form-label">主机</label>
+            <input class="form-control" id="sshHost" readonly>
+          </div>
+          <div>
+            <label class="form-label">端口</label>
+            <input class="form-control" type="number" min="1" max="65535" id="sshPort" value="22">
+          </div>
+          <div>
+            <label class="form-label">用户</label>
+            <input class="form-control" id="sshUser" value="root">
+          </div>
+          <div>
+            <label class="form-label">密码</label>
+            <input class="form-control" type="password" id="sshPassword" autocomplete="current-password">
+          </div>
+        </div>
+        <label class="form-label mt-3">命令</label>
+        <div class="input-group">
+          <input class="form-control" id="sshCommand" value="uname -a">
+          <button class="btn btn-primary" id="btnRunSsh"><i class="bi bi-play-fill"></i> 执行</button>
+        </div>
+        <pre id="sshOutput" class="mt-3 p-3 rounded" style="min-height:280px;max-height:55vh;overflow:auto;background:#05070b;color:#d7f7e8;border:1px solid rgba(255,255,255,.12);white-space:pre-wrap;"></pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="portproxyModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">开放端口</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="portproxyVmName">
+        <div class="form-hint mb-3" id="portproxyModeHint">选择多台 VM 后批量配置：每台使用自己的公网 IP 和内网 IP，端口范围相同。</div>
+        <div class="create-form-grid hv-config-grid">
+          <div class="single-portproxy-field">
+            <label class="form-label">监听公网 IP</label>
+            <input class="form-control" id="portproxyListenIp" placeholder="例如 169.214.190.31">
+          </div>
+          <div>
+            <label class="form-label">开放端口</label>
+            <input class="form-control" id="portproxyListenPort" placeholder="例如 80 或 10000-10049">
+          </div>
+          <div class="single-portproxy-field">
+            <label class="form-label">目标内网 IP</label>
+            <input class="form-control" id="portproxyTargetIp" placeholder="例如 192.168.9.253">
+          </div>
+          <div>
+            <label class="form-label">目标端口</label>
+            <input class="form-control" id="portproxyTargetPort" placeholder="可空，默认同开放端口">
+          </div>
+        </div>
+        <div class="form-hint mt-3">开放端口支持单个端口或范围，例如 80、10000-10049。目标端口不填时默认使用相同端口；批量时每台 VM 自动使用自己的公网 IP 和内网 IP。保存不会修改 WAN 网卡、公网 IP、MAC、网关或拨号；8080 保留给面板不能使用。</div>
+        <pre id="portproxyResult" class="mt-3 p-3 rounded d-none" style="min-height:90px;max-height:220px;overflow:auto;background:#05070b;color:#d7f7e8;border:1px solid rgba(255,255,255,.12);white-space:pre-wrap;"></pre>
+      </div>
+      <div class="modal-footer">
+        <a class="btn btn-outline-success d-none" id="btnOpenPortproxyUrl" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right"></i> 打开</a>
+        <button class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+        <button class="btn btn-primary" id="btnSavePortproxy"><i class="bi bi-diagram-2"></i> 保存开放</button>
       </div>
     </div>
   </div>
@@ -233,9 +453,12 @@
 let vmRows = [];
 let pveAvailable = true;
 let createModal;
+let ikuaiModal;
 let imageModal;
 let configModal;
 let passwordModal;
+let sshModal;
+let portproxyModal;
 
 function stateBadge(state) {
   const s = String(state || '');
@@ -257,12 +480,141 @@ function memoryText(vm) {
   return `${formatBytes(vm.memory_assigned || 0)} / ${formatBytes(vm.memory_startup || 0)}`;
 }
 
+function sshHost(value) {
+  const m = String(value || '').match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+  return m ? m[0] : '';
+}
+
+async function openSsh(name, value) {
+  const fallbackHost = sshHost(value);
+  if (!fallbackHost) return toast('没有可用公网IP，不能打开SSH', 'error', 4000);
+  const r = await api.post(`/api/hyperv/vms/${encodeURIComponent(name)}/configure-ssh`, {});
+  if (!r.ok) return toast(r.error || '配置 SSH 内网映射失败', 'error', 6000);
+  const d = r.data || {};
+  const host = d.ssh_host || d.public_ip || fallbackHost;
+  const port = d.ssh_port || 22;
+  $('#sshHost').val(host);
+  $('#sshPort').val(port);
+  $('#sshUser').val('root');
+  $('#sshCommand').val('uname -a');
+  $('#sshOutput').text(`root@${host}:${port} -> ${d.internal_ip || '-'}:22\n`);
+  sshModal.show();
+}
+
+function openPortproxy(name) {
+  const vm = vmRows.find(x => x.name === name) || {};
+  const listenIp = sshHost(vm.public_ip);
+  $('#portproxyVmName').val(name);
+  $('#portproxyModeHint').text('单台配置：使用当前 VM 的公网 IP 和内网 IP。');
+  $('.single-portproxy-field').removeClass('d-none');
+  $('#portproxyListenIp').val(listenIp);
+  $('#portproxyListenPort').val('');
+  $('#portproxyTargetIp').val(vm.internal_ip || '');
+  $('#portproxyTargetPort').val('');
+  $('#portproxyResult').addClass('d-none').text('');
+  $('#btnOpenPortproxyUrl').addClass('d-none').removeAttr('href');
+  portproxyModal.show();
+}
+
+function openBatchPortproxy() {
+  const names = selectedNames();
+  if (!names.length) return toast('请先选择机器', 'error', 4000);
+  $('#portproxyVmName').val('__batch__');
+  $('#portproxyModeHint').text(`批量配置：已选择 ${names.length} 台，每台自动使用自己的公网 IP -> 自己的内网 IP。`);
+  $('.single-portproxy-field').addClass('d-none');
+  $('#portproxyListenIp').val('');
+  $('#portproxyListenPort').val('');
+  $('#portproxyTargetIp').val('');
+  $('#portproxyTargetPort').val('');
+  $('#portproxyResult').addClass('d-none').text('');
+  $('#btnOpenPortproxyUrl').addClass('d-none').removeAttr('href');
+  portproxyModal.show();
+}
+
+async function savePortproxy() {
+  const name = $('#portproxyVmName').val();
+  const isBatch = name === '__batch__';
+  const portRange = parsePortRange($('#portproxyListenPort').val());
+  if (!portRange.ok) return toast(portRange.error, 'error', 6000);
+  const targetPortText = $('#portproxyTargetPort').val().trim();
+  const targetPort = targetPortText ? Number(targetPortText) : portRange.start;
+  if (!Number.isInteger(targetPort) || targetPort < 1 || targetPort > 65535) return toast('目标端口格式错误，例如 80 或 10000', 'error', 5000);
+  if (targetPort + portRange.count - 1 > 65535) return toast('目标端口范围超过 65535', 'error', 5000);
+  const payload = {
+    protocol: 'tcp',
+    listen_ip: $('#portproxyListenIp').val().trim(),
+    listen_port: portRange.start,
+    port_count: portRange.count,
+    target_ip: $('#portproxyTargetIp').val().trim(),
+    target_port: targetPort
+  };
+  if (!name) return toast('没有选中虚拟机', 'error');
+  if (!isBatch && (!payload.listen_ip || !payload.target_ip)) return toast('请填写公网 IP 和目标内网 IP', 'error', 5000);
+  if (payload.port_count < 1 || payload.port_count > 100) return toast('一次最多开放 100 个端口', 'error', 5000);
+  if (payload.listen_port <= 8080 && payload.listen_port + payload.port_count - 1 >= 8080) return toast('8080 是面板端口，不能用于映射', 'error', 5000);
+  if (isBatch) {
+    payload.names = selectedNames();
+    if (!payload.names.length) return toast('请先选择机器', 'error', 4000);
+    const totalRules = payload.names.length * payload.port_count;
+    if (!confirm(`确定给 ${payload.names.length} 台 VM 开放 ${payload.port_count} 个端口吗？\n将写入约 ${totalRules} 条 Windows 端口规则，端口越多等待越久。`)) return;
+  }
+  $('#btnSavePortproxy').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 保存中');
+  const pendingRules = isBatch ? payload.names.length * payload.port_count : payload.port_count;
+  $('#portproxyResult').removeClass('d-none').text(`正在开放端口...\n预计写入 ${pendingRules} 条规则，请不要重复点击。`);
+  try {
+    const r = isBatch
+      ? await api.post('/api/hyperv/batch/portproxy', payload)
+      : await api.post(`/api/hyperv/vms/${encodeURIComponent(name)}/portproxy`, payload);
+    if (!r.ok) {
+      $('#portproxyResult').text(`开放端口失败：${r.error || '-'}`);
+      toast(r.error || '开放端口失败', 'error', 8000);
+      return;
+    }
+    if (isBatch) {
+      const rows = r.data || [];
+      const failed = rows.filter(x => !x.ok);
+      const lines = rows.map(x => x.ok ? `${x.name}: ${(x.data || {}).mapping || 'OK'}` : `${x.name}: FAILED ${x.error || '-'}`);
+      $('#portproxyResult').text(`开放端口完成：成功 ${rows.length - failed.length}/${rows.length}\n${lines.join('\n')}`);
+      toast(failed.length ? `开放端口完成，失败 ${failed.length} 台` : '开放端口完成', failed.length ? 'error' : 'success', 7000);
+      return;
+    }
+    const d = r.data || {};
+    const url = d.url || `http://${payload.listen_ip}:${payload.listen_port}/`;
+    const detail = Array.isArray(d.mappings) && d.mappings.length <= 12 ? `\n${d.mappings.join('\n')}` : '';
+    $('#portproxyResult').text(`开放端口完成\n${d.mapping || `${payload.listen_ip}:${payload.listen_port} -> ${payload.target_ip}:${payload.target_port}`}${detail}\n打开地址：${url}`);
+    $('#btnOpenPortproxyUrl').removeClass('d-none').attr('href', url);
+    toast('端口已开放，可以点击打开', 'success', 6000);
+  } finally {
+    $('#btnSavePortproxy').prop('disabled', false).html('<i class="bi bi-diagram-2"></i> 保存开放');
+  }
+}
+
+function parsePortRange(value) {
+  const text = String(value || '').trim();
+  if (!text) return { ok: false, error: '请填写开放端口，例如 80 或 10000-10049' };
+  const match = text.match(/^(\d{1,5})(?:\s*-\s*(\d{1,5}))?$/);
+  if (!match) return { ok: false, error: '开放端口格式错误，例如 80 或 10000-10049' };
+  const start = Number(match[1]);
+  const end = match[2] ? Number(match[2]) : start;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end > 65535 || end < start) {
+    return { ok: false, error: '开放端口必须在 1-65535，范围结束不能小于开始' };
+  }
+  if (start <= 8080 && end >= 8080) return { ok: false, error: '8080 是面板端口，不能开放' };
+  const count = end - start + 1;
+  if (count > 100) return { ok: false, error: '一次最多开放 100 个端口' };
+  return { ok: true, start, end, count };
+}
+
 function actionButtons(vm) {
   const name = encodeURIComponent(vm.name || '');
   const running = String(vm.state || '').toLowerCase() === 'running';
   const off = String(vm.state || '').toLowerCase() === 'off';
+  const hasPublicIp = !!vm.public_ip;
+  const host = sshHost(vm.public_ip);
   return `
     <div class="line-actions hv-actions">
+      <button class="mini-btn" ${host ? '' : 'disabled'} onclick="openSsh(decodeURIComponent('${name}'), '${host}')"><i class="bi bi-terminal"></i> SSH</button>
+      <button class="mini-btn" onclick="configurePublicIp(decodeURIComponent('${name}'))"><i class="bi bi-diagram-3"></i> 更新映射</button>
       <button class="mini-btn" ${off ? '' : 'disabled'} onclick="vmAction(decodeURIComponent('${name}'), 'start')"><i class="bi bi-play-fill"></i> 开机</button>
       <button class="mini-btn danger" ${running ? '' : 'disabled'} onclick="vmAction(decodeURIComponent('${name}'), 'shutdown')"><i class="bi bi-power"></i> 关机</button>
       <button class="mini-btn danger" ${running ? '' : 'disabled'} onclick="vmAction(decodeURIComponent('${name}'), 'turnoff')"><i class="bi bi-stop-fill"></i> 断电</button>
@@ -272,10 +624,106 @@ function actionButtons(vm) {
   `;
 }
 
+async function configurePublicIp(name) {
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境', 'error', 4000);
+  const r = await api.post(`/api/hyperv/vms/${encodeURIComponent(name)}/update-mapping`, {});
+  if (r.ok) {
+    const d = r.data || {};
+    toast(`映射已更新：${d.public_ip || ''} -> ${d.internal_ip || ''}`, 'success', 6000);
+    await loadHyperV();
+  } else {
+    toast(r.error || '更新映射失败', 'error', 6000);
+  }
+}
+
+async function batchRefreshPublicIp() {
+  const names = selectedNames();
+  if (!names.length) return toast('请先选择机器', 'error');
+  if (!confirm(`确定更新 ${names.length} 台机器的公网映射吗？VM 内网 IP 不变，只按当前线路表重写公网 IP -> VM 内网 IP 映射。`)) return;
+  setDeployStatus(`开始更新映射：0/${names.length}`);
+  const r = await api.post('/api/hyperv/batch/refresh_public_ip', { names });
+  if (r.ok) {
+    const rows = r.data || [];
+    const failed = rows.filter(x => !x.ok);
+    const lines = rows.map(x => {
+      const d = x.data || {};
+      return x.ok ? `${x.name}: ${d.old_public_ip || '-'} -> ${d.public_ip || '-'}` : `${x.name}: FAILED ${x.error || '-'}`;
+    });
+    setDeployStatus(`批量更新映射完成：成功 ${rows.length - failed.length}/${rows.length}\n${lines.join('\n')}`);
+    toast(failed.length ? `映射更新完成，失败 ${failed.length} 台` : '映射更新完成', failed.length ? 'error' : 'success', 7000);
+  } else {
+    setDeployStatus(`批量更新映射失败：${r.error || '-'}`);
+    toast(r.error || '批量更新映射失败', 'error', 7000);
+  }
+  await loadHyperV();
+}
+
+function renderStartJobStatus(job) {
+  const d = job || {};
+  const messages = Array.isArray(d.messages) ? d.messages : [];
+  const header = [
+    `开机进度：${Math.round(Number(d.percent || 0))}%`,
+    `已开机 ${d.started_count || 0} 台 / 失败 ${d.failed_count || 0} 台 / 总数 ${d.total || '-'}`,
+    `批次：${d.current_batch || '-'} / ${d.total_batches || '-'}`,
+    `状态：${d.message || d.stage || '-'}`
+  ];
+  setDeployStatus(`${header.join('\n')}\n\n${messages.join('\n')}`);
+}
+
+async function batchStartStaged() {
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境', 'error', 4000);
+  const selected = selectedNames();
+  if (!selected.length) return toast('请先选择机器', 'error');
+  const selectedSet = new Set(selected);
+  const names = vmRows
+    .filter(vm => selectedSet.has(vm.name) && String(vm.state || '').toLowerCase() === 'off')
+    .map(vm => vm.name);
+  if (!names.length) return toast('没有可开机的已关机 VM', 'error', 5000);
+  const batchSize = 5;
+  const waitSeconds = 15;
+  if (!confirm(`确定分批开机 ${names.length} 台机器吗？每批 ${batchSize} 台，间隔 ${waitSeconds} 秒。`)) return;
+
+  $('.hv-bulkbar button').prop('disabled', true);
+  $('#btnRefresh').prop('disabled', true);
+  setDeployStatus(`开始分批开机\n总数：${names.length} 台\n每批：${batchSize} 台\n间隔：${waitSeconds} 秒`);
+  try {
+    const start = await api.post('/api/hyperv/batch-start/start', { names, batch_size: batchSize, wait_seconds: waitSeconds });
+    if (!start.ok) {
+      setDeployStatus(`分批开机启动失败：${start.error || '-'}`);
+      toast(start.error || '分批开机启动失败', 'error', 8000);
+      return;
+    }
+    const jobId = (start.data || {}).job_id;
+    toast(`分批开机任务已提交：${names.length} 台`, 'success', 5000);
+    let last = null;
+    while (true) {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      const r = await api.get(`/api/hyperv/batch-start/status/${encodeURIComponent(jobId)}`);
+      if (!r.ok) {
+        setDeployStatus(`读取分批开机状态失败：${r.error || '-'}\n任务：${jobId}`);
+        toast(r.error || '读取分批开机状态失败', 'error', 8000);
+        return;
+      }
+      last = r.data || {};
+      renderStartJobStatus(last);
+      if (last.status === 'done' || last.status === 'error') break;
+    }
+    if (last && last.status === 'done') {
+      toast(`分批开机完成：${last.started_count || 0} 台`, 'success', 7000);
+    } else {
+      toast((last && (last.error || last.message)) || '分批开机失败', 'error', 9000);
+    }
+  } finally {
+    $('.hv-bulkbar button').prop('disabled', false);
+    $('#btnRefresh').prop('disabled', false);
+    await loadHyperV();
+  }
+}
+
 function renderRows() {
   const tb = $('#vmTable').empty();
   if (!vmRows.length) {
-    const text = pveAvailable ? '没有读取到虚拟机。' : '当前环境不是 Hyper-V 主机，无法读取虚拟机。';
+    const text = pveAvailable ? '没有读取到虚拟机。' : '当前环境没有可用的 VM 管理能力。';
     tb.append(`<tr><td colspan="8" class="empty-cell">${text}</td></tr>`);
     return;
   }
@@ -304,7 +752,7 @@ async function loadHyperV() {
   $('#btnRefresh').prop('disabled', false);
   if (!summary.ok) {
     pveAvailable = false;
-    $('#pveUnavailable').removeClass('d-none').text(summary.error || 'Hyper-V 环境不可用');
+    $('#pveUnavailable').removeClass('d-none').text(summary.error || 'VM 管理环境不可用');
     vmRows = [];
     renderRows();
     return;
@@ -312,11 +760,11 @@ async function loadHyperV() {
   const s = summary.data || {};
   pveAvailable = s.available !== false;
   if (!pveAvailable) {
-    $('#pveUnavailable').removeClass('d-none').text(s.message || 'HV虚拟机模块需要运行在 Hyper-V 主机上。');
+    $('#pveUnavailable').removeClass('d-none').text(s.message || 'HV虚拟机模块需要 Hyper-V 或 KVM/libvirt 环境。');
     $('.hv-bulkbar button').prop('disabled', true);
     $('#btnRefresh').prop('disabled', false);
     vmRows = [];
-    $('#hvHost').text(s.computer_name ? `主机：${s.computer_name} / Hyper-V 不可用` : 'Hyper-V 不可用');
+    $('#hvHost').text(s.computer_name ? `主机：${s.computer_name} / VM 管理不可用` : 'VM 管理不可用');
     renderRows();
     return;
   }
@@ -331,22 +779,32 @@ async function loadHyperV() {
 async function loadSwitches() {
   const r = await api.get('/api/hyperv/switches');
   const sel = $('#newSwitch');
+  const ikuaiLan = $('#ikuaiLanSwitch');
   const current = sel.val() || '';
+  const ikuaiCurrent = ikuaiLan.val() || 'VM-LAN';
   sel.empty().append('<option value="">不连接</option>');
+  ikuaiLan.empty().append('<option value="VM-LAN">VM-LAN</option>');
   if (r.ok) {
     (r.data || []).forEach(sw => {
       sel.append(`<option value="${escapeHtml(sw.name || '')}">${escapeHtml(sw.name || '')} (${escapeHtml(sw.switch_type || '-')})</option>`);
+      if ((sw.name || '') !== 'VM-LAN') {
+        ikuaiLan.append(`<option value="${escapeHtml(sw.name || '')}">${escapeHtml(sw.name || '')} (${escapeHtml(sw.switch_type || '-')})</option>`);
+      }
     });
   }
   sel.val(current);
+  ikuaiLan.val(ikuaiCurrent);
 }
 
 async function loadImages() {
   const r = await api.get('/api/hyperv/images');
   const sel = $('#newImage');
+  const ikuaiSel = $('#ikuaiImage');
   const tb = $('#imageTable');
   const current = sel.val() || '';
+  const ikuaiCurrent = ikuaiSel.val() || '';
   sel.empty().append('<option value="">不使用镜像，创建空白硬盘</option>');
+  ikuaiSel.empty().append('<option value="">请选择 iKuai ISO/VHD/VHDX 镜像</option>');
   tb.empty();
   if (!r.ok) {
     tb.append(`<tr><td colspan="4" class="empty-cell">${escapeHtml(r.error || '读取镜像失败')}</td></tr>`);
@@ -358,23 +816,108 @@ async function loadImages() {
   }
   rows.forEach(img => {
     sel.append(`<option value="${escapeHtml(img.path || '')}">${escapeHtml(img.name || '')} (${formatBytes(img.size || 0)})</option>`);
+    ikuaiSel.append(`<option value="${escapeHtml(img.path || '')}">${escapeHtml(img.name || '')} (${formatBytes(img.size || 0)})</option>`);
     tb.append(`<tr><td>${escapeHtml(img.name || '-')}</td><td>${escapeHtml(img.extension || '-')}</td><td>${formatBytes(img.size || 0)}</td><td class="small-cell">${escapeHtml(img.path || '-')}</td></tr>`);
   });
   sel.val(current);
+  ikuaiSel.val(ikuaiCurrent);
+}
+
+function syncCreateModeFields() {
+  const mapped = $('#newMode').val() === 'ip_map';
+  $('#newSwitchField').toggleClass('d-none', mapped);
+  $('#mappedSwitchHint').toggleClass('d-none', !mapped);
+  $('#startIndexField').toggleClass('d-none', mapped);
+  if (mapped) {
+    $('#newSwitch').val('VM-LAN');
+    $('#newStartIndex').val(1);
+  }
+}
+
+function toggleNetworkAdvanced() {
+  $('.advanced-network-field').toggleClass('d-none');
+}
+
+function syncInternalStartIpToFields() {
+  const raw = ($('#newInternalStartIp').val() || '').trim();
+  const m = raw.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  $('#newInternalBase').val(m[1]);
+  $('#newInternalStart').val(Number(m[2]));
+  return true;
+}
+
+function syncInternalFieldsToStartIp() {
+  const base = ($('#newInternalBase').val() || '').trim();
+  const host = Number($('#newInternalStart').val() || 0);
+  if (base && host) $('#newInternalStartIp').val(`${base}.${host}`);
 }
 
 function openCreateModal() {
-  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能创建虚拟机', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能创建虚拟机', 'error', 4000);
   loadSwitches();
   loadImages();
+  syncCreateModeFields();
   createModal.show();
 }
 
 function openImageModal() {
-  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能导入镜像', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能导入镜像', 'error', 4000);
   $('#imagePath').val('');
   loadImages();
   imageModal.show();
+}
+
+function setIkuaiStatus(text) {
+  $('#ikuaiStatus').removeClass('d-none').text(text || '');
+}
+
+function openIkuaiModal() {
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能安装 iKuai', 'error', 4000);
+  $('#ikuaiStatus').addClass('d-none').text('');
+  loadSwitches();
+  loadImages();
+  ikuaiModal.show();
+}
+
+async function installIkuai() {
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能安装 iKuai', 'error', 4000);
+  const wanSwitches = ($('#ikuaiWanSwitches').val() || '')
+    .split(/\r?\n/)
+    .map(x => x.trim())
+    .filter(Boolean);
+  const payload = {
+    name: $('#ikuaiName').val(),
+    image_path: $('#ikuaiImage').val(),
+    processor_count: 4,
+    memory_startup_mb: 4096,
+    disk_size_gb: 8,
+    generation: 1,
+    internal_ip: '192.168.9.253',
+    lan_switch: $('#ikuaiLanSwitch').val(),
+    wan_switches: wanSwitches,
+    auto_start: $('#ikuaiAutoStart').val() === 'true'
+  };
+  if (!payload.name) return toast('请输入 iKuai 虚拟机名称', 'error');
+  if (!payload.image_path) return toast('请选择 iKuai 镜像', 'error', 5000);
+  if (!confirm(`确定创建 iKuai 虚拟机 ${payload.name} 吗？\n只会创建 VM 和网卡，不会修改现有 Windows 公网 IP/MAC/拨号。`)) return;
+  $('#btnInstallIkuaiSubmit').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 安装中');
+  setIkuaiStatus('开始创建 iKuai 虚拟机...');
+  try {
+    const r = await api.post('/api/hyperv/ikuai/install', payload);
+    if (!r.ok) {
+      setIkuaiStatus(`iKuai 创建失败：${r.error || '-'}`);
+      toast(r.error || 'iKuai 创建失败', 'error', 9000);
+      return;
+    }
+    const d = r.data || {};
+    const adapters = (d.adapters || []).map(x => `${x.name || '-'} -> ${x.switch_name || '-'} / MAC ${x.mac || '-'}`).join('\n');
+    setIkuaiStatus(`iKuai 创建完成\n名称：${d.name || payload.name}\n状态：${d.state || '-'}\n镜像：${d.image || '-'}\n硬盘：${d.vhd || '-'}\nLAN：${d.lan_switch || '-'}\n网卡：\n${adapters || '-'}`);
+    toast('iKuai 虚拟机已创建', 'success', 6000);
+    await loadHyperV();
+  } finally {
+    $('#btnInstallIkuaiSubmit').prop('disabled', false).html('<i class="bi bi-router"></i> 开始安装');
+  }
 }
 
 async function importImage() {
@@ -391,36 +934,201 @@ async function importImage() {
   }
 }
 
+function setDeployStatus(text, append = false) {
+  const el = $('#deployStatus');
+  el.removeClass('d-none');
+  el.text(append ? `${el.text()}\n${text}` : text);
+}
+
+function renderCreateJobStatus(job, startedAt) {
+  const d = job || {};
+  const messages = Array.isArray(d.messages) ? d.messages : [];
+  const elapsed = Math.round((Date.now() - startedAt) / 1000);
+  const total = Number(d.total || 0);
+  const created = Number(d.created_count || 0);
+  const skipped = Number(d.skipped_count || 0);
+  const failed = Number(d.failed_count || 0);
+  const percent = Math.max(0, Math.min(100, Number(d.percent || 0)));
+  const header = [
+    `Create progress: ${Math.round(percent)}%`,
+    `Current: success ${created} / skipped ${skipped} / failed ${failed} / total ${total || '-'}`,
+    `Elapsed: ${d.seconds || elapsed}s`,
+    `Status: ${d.message || d.stage || '-'}`
+  ];
+  setDeployStatus(`${header.join('\n')}\n\n${messages.join('\n')}`);
+}
+
+async function ensureVmLanSwitch() {
+  if (!confirm('确定初始化 VM 内网交换机 VM-LAN，并配置网关 192.168.9.1/24 吗？')) return;
+  $('#btnEnsureVmLan').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 初始化中');
+  setDeployStatus('正在初始化 VM 内网交换机 VM-LAN...');
+  const r = await api.post('/api/hyperv/switches/vm-lan/ensure', {
+    name: 'VM-LAN',
+    ip: $('#newInternalGateway').val() || '192.168.9.1',
+    prefix: 24
+  });
+  $('#btnEnsureVmLan').prop('disabled', false).html('<i class="bi bi-hdd-network"></i> 初始化 VM 内网交换机');
+  if (!r.ok) {
+    setDeployStatus(`VM 内网交换机初始化失败：${r.error || '-'}`);
+    return toast(r.error || 'VM 内网交换机初始化失败', 'error', 9000);
+  }
+  const d = r.data || {};
+  const msg = `${d.message || 'VM 内网交换机已就绪'}\n交换机：${d.switch_name || 'VM-LAN'}\n网关：${d.ip || '-'} / ${d.prefix || 24}\n适配器/桥：${d.adapter || d.bridge || '-'}${d.restart_required ? '\n需要重启后再继续创建虚拟机。' : ''}`;
+  setDeployStatus(msg);
+  toast(d.restart_required ? '虚拟化组件已开启，需要重启后继续' : 'VM 内网交换机已就绪', d.restart_required ? 'error' : 'success', 9000);
+  await loadSwitches();
+}
+
+function setImageProgress(percent, text) {
+  const value = Math.max(0, Math.min(100, Number(percent || 0)));
+  $('#imageProgressBox').removeClass('d-none');
+  $('#imageProgressBar').css('width', `${value}%`);
+  $('#imageProgressPercent').text(`${Math.round(value)}%`);
+  $('#imageProgressText').text(text || '-');
+}
+
+async function prepareDebianImage() {
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能下载镜像', 'error', 4000);
+  if (!confirm('确定准备 Debian cloud 镜像吗？已存在镜像时不会重复下载。')) return;
+  const started = Date.now();
+  $('#btnPrepareDebianImage').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 镜像处理中');
+  setDeployStatus('开始准备 Debian cloud 镜像...');
+  setImageProgress(0, '任务启动中...');
+  const start = await api.post('/api/hyperv/images/debian-cloud/prepare/start', { force: false });
+  if (!start.ok) {
+    $('#btnPrepareDebianImage').prop('disabled', false).html('<i class="bi bi-cloud-download"></i> 准备 Debian 镜像');
+    setDeployStatus(`镜像准备失败：${start.error || '-'}`);
+    toast(start.error || '镜像准备失败', 'error', 8000);
+    return;
+  }
+  const jobId = (start.data || {}).job_id;
+  let last = null;
+  while (true) {
+    await new Promise(resolve => setTimeout(resolve, 1200));
+    const r = await api.get(`/api/hyperv/images/debian-cloud/prepare/status/${encodeURIComponent(jobId)}`);
+    if (!r.ok) {
+      $('#btnPrepareDebianImage').prop('disabled', false).html('<i class="bi bi-cloud-download"></i> 准备 Debian 镜像');
+      setDeployStatus(`镜像准备失败：${r.error || '-'}`);
+      toast(r.error || '镜像准备失败', 'error', 8000);
+      return;
+    }
+    const d = r.data || {};
+    last = d;
+    setImageProgress(d.percent || 0, d.message || d.stage || '处理中...');
+    setDeployStatus(`镜像准备中\n阶段：${d.stage || '-'}\n进度：${Math.round(Number(d.percent || 0))}%\n状态：${d.message || '-'}`);
+    if (d.status === 'done' || d.status === 'error') break;
+  }
+  const seconds = Math.round((Date.now() - started) / 1000);
+  if (last && last.status === 'done') {
+    const d = last.result || {};
+    setImageProgress(100, '镜像准备完成');
+    setDeployStatus(`镜像准备完成\n耗时：${d.seconds || seconds} 秒\n镜像：${d.image || ''}\nQCOW2：${formatBytes(d.qcow_size || 0)}${d.vhdx_size ? `\nVHDX：${formatBytes(d.vhdx_size)}` : ''}`);
+    toast(`镜像准备完成，耗时 ${d.seconds || seconds} 秒`, 'success', 6000);
+    await loadImages();
+  } else {
+    setImageProgress(100, '镜像准备失败');
+    setDeployStatus(`镜像准备失败：${(last && (last.error || last.message)) || '-'}`);
+    toast((last && (last.error || last.message)) || '镜像准备失败', 'error', 8000);
+  }
+  $('#btnPrepareDebianImage').prop('disabled', false).html('<i class="bi bi-cloud-download"></i> 准备 Debian 镜像');
+}
+
+async function clearAllVms() {
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能清空虚拟机', 'error', 4000);
+  if (!confirm('确定清空当前虚拟机吗？不会改动线路、MAC、拨号和节点。')) return;
+  const started = Date.now();
+  setDeployStatus('开始清空虚拟机...');
+  const r = await api.post('/api/hyperv/clear-all', {});
+  const seconds = Math.round((Date.now() - started) / 1000);
+  if (r.ok) {
+    const d = r.data || {};
+    setDeployStatus(`清空完成\n耗时：${d.seconds || seconds} 秒\n删除：${d.deleted_count || 0} 台\n备份目录：${d.backup_root || ''}`);
+    toast(`已清空 ${d.deleted_count || 0} 台 VM，耗时 ${d.seconds || seconds} 秒`, 'success', 7000);
+    await loadHyperV();
+  } else {
+    setDeployStatus(`清空失败：${r.error || '-'}`);
+    toast(r.error || '清空虚拟机失败', 'error', 8000);
+  }
+}
+
 async function createBatch() {
-  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能创建虚拟机', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境', 'error', 4000);
+  if (!syncInternalStartIpToFields()) return toast('VM 起始内网 IP 格式错误，例如 192.168.9.101', 'error', 5000);
+  const startHost = Number($('#newInternalStart').val());
+  const count = Number($('#newCount').val());
+  const gateway = ($('#newInternalGateway').val() || '').trim();
+  const startIp = ($('#newInternalStartIp').val() || '').trim();
+  if (startHost < 2 || startHost > 254) return toast('VM 内网尾号必须在 2-254 之间', 'error', 5000);
+  if (startHost + count - 1 > 254) return toast(`VM 内网 IP 不够：${startIp} + ${count} 会超过 .254`, 'error', 7000);
+  if (gateway === startIp) return toast('VM 起始内网 IP 不能等于网关', 'error', 5000);
   const payload = {
+    mode: $('#newMode').val(),
     prefix: $('#newPrefix').val(),
-    count: Number($('#newCount').val()),
-    start_index: Number($('#newStartIndex').val()),
+    count,
+    start_index: $('#newMode').val() === 'ip_map' ? 1 : Number($('#newStartIndex').val()),
+    map_start_index: $('#newMode').val() === 'ip_map' ? 1 : Number($('#newStartIndex').val()),
     processor_count: Number($('#newCpu').val()),
     memory_startup_mb: Number($('#newMemory').val()),
     disk_size_gb: Number($('#newDisk').val()),
     generation: Number($('#newGeneration').val()),
-    switch_name: $('#newSwitch').val(),
+    switch_name: $('#newMode').val() === 'ip_map' ? 'VM-LAN' : $('#newSwitch').val(),
     image_path: $('#newImage').val(),
-    auto_start: $('#newAutoStart').val() === 'true'
+    auto_start: $('#newAutoStart').val() === 'true',
+    configure_guest: $('#newConfigureGuest').val() === 'true',
+    root_password: $('#newRootPassword').val(),
+    internal_base: $('#newInternalBase').val(),
+    internal_start_host: Number($('#newInternalStart').val()),
+    internal_gateway: $('#newInternalGateway').val(),
+    internal_dns: $('#newInternalDns').val(),
+    ssh_port: Number($('#newSshPort').val())
   };
-  if (!confirm(`确定新建 ${payload.count} 台虚拟机吗？`)) return;
-  $('#btnCreateBatch').prop('disabled', true);
-  const r = await api.post('/api/hyperv/batch-create', payload);
-  $('#btnCreateBatch').prop('disabled', false);
-  if (r.ok) {
-    const failed = (r.data || []).filter(x => !x.ok);
-    toast(failed.length ? `新建完成，失败 ${failed.length} 台` : '批量新建完成', failed.length ? 'error' : 'success', 4000);
-    createModal.hide();
+  if (payload.mode === 'ip_map' && payload.configure_guest && !payload.root_password) {
+    return toast('请输入 root 密码', 'error');
+  }
+  if (!confirm(`确定创建 ${payload.count} 台虚拟机吗？`)) return;
+  $('#btnCreateBatch').prop('disabled', true).html('<i class="bi bi-hourglass-split"></i> 创建中');
+  const started = Date.now();
+  setDeployStatus(`开始创建 ${payload.count} 台虚拟机...\n每完成一台会即时显示进度。`);
+  try {
+    const start = await api.post('/api/hyperv/batch-create/start', payload);
+    if (!start.ok) {
+      setDeployStatus(`批量创建启动失败：${start.error || '-'}`);
+      toast(start.error || '批量创建启动失败', 'error', 8000);
+      return;
+    }
+    const jobId = (start.data || {}).job_id;
+    let last = null;
+    let pollCount = 0;
+    while (true) {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      const r = await api.get(`/api/hyperv/batch-create/status/${encodeURIComponent(jobId)}`);
+      if (!r.ok) {
+        setDeployStatus(`读取创建状态失败：${r.error || '-'}\n任务：${jobId}`);
+        toast(r.error || '读取创建状态失败', 'error', 8000);
+        return;
+      }
+      last = r.data || {};
+      renderCreateJobStatus(last, started);
+      pollCount += 1;
+      if (pollCount % 3 === 0 || last.status === 'done' || last.status === 'error') {
+        await loadHyperV();
+      }
+      if (last.status === 'done' || last.status === 'error') break;
+    }
     await loadHyperV();
-  } else {
-    toast(r.error || '批量新建失败', 'error', 5000);
+    if (last && last.status === 'done') {
+      toast(`批量创建完成：成功 ${last.created_count || 0} 台`, 'success', 6000);
+      createModal.hide();
+    } else {
+      toast((last && (last.error || last.message)) || '批量创建失败', 'error', 9000);
+    }
+  } finally {
+    $('#btnCreateBatch').prop('disabled', false).html('<i class="bi bi-plus-circle"></i> 开始新建');
   }
 }
 
 async function vmAction(name, action) {
-  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能操作虚拟机', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能操作虚拟机', 'error', 4000);
   const labels = { start: '开机', shutdown: '关机', turnoff: '强制断电', restart: '重启', reset: '重置系统' };
   const label = labels[action] || action;
   if (!confirm(`确定要${label}虚拟机 ${name} 吗？`)) return;
@@ -434,11 +1142,12 @@ async function vmAction(name, action) {
 }
 
 async function batchAction(action) {
-  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能操作虚拟机', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能操作虚拟机', 'error', 4000);
   const names = selectedNames();
-  const labels = { restart: '批量重启', shutdown: '批量关机', reset: '批量重置系统', reset_password: '批量重置密码' };
+  const labels = { restart: '批量重启', shutdown: '批量关机', reset: '批量重置系统', reset_password: '批量重置密码', delete: '批量删除' };
   if (!names.length) return toast('请先选择机器', 'error');
-  if (!confirm(`确定对 ${names.length} 台机器执行${labels[action] || action}吗？`)) return;
+  const extra = action === 'delete' ? '删除会先强制关机并移除虚拟机配置，不会改动线路/MAC/拨号。' : '';
+  if (!confirm(`确定对 ${names.length} 台机器执行${labels[action] || action}吗？${extra}`)) return;
   const r = await api.post(`/api/hyperv/batch/${action}`, { names });
   if (r.ok) {
     const failed = (r.data || []).filter(x => !x.ok);
@@ -450,7 +1159,7 @@ async function batchAction(action) {
 }
 
 async function openConfig(name) {
-  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能读取配置', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能读取配置', 'error', 4000);
   const r = await api.get(`/api/hyperv/vms/${encodeURIComponent(name)}/config`);
   if (!r.ok) return toast(r.error || '读取配置失败', 'error');
   const d = r.data || {};
@@ -463,6 +1172,11 @@ async function openConfig(name) {
   $('#cfgMaxMemory').val(d.memory_maximum_mb || d.memory_startup_mb || 2048);
   $('#cfgStartAction').val(d.automatic_start_action || 'Nothing');
   $('#cfgStopAction').val(d.automatic_stop_action || 'Save');
+  $('#cfgPublicIp').val(d.public_ip_mapping || '');
+  $('#cfgPublicSource').val(d.public_ip_source || '');
+  $('#cfgPublicGateway').val(d.public_ip_gateway || '');
+  $('#cfgPublicDns').val(d.public_ip_dns || '');
+  $('#cfgPublicMac').val(d.public_ip_mac || '');
   $('#cfgNotes').val(d.notes || '');
   configModal.show();
 }
@@ -490,7 +1204,7 @@ async function saveConfig() {
 }
 
 function openPasswordModal() {
-  if (!pveAvailable) return toast('当前服务器不是 Hyper-V 主机，不能重置密码', 'error', 4000);
+  if (!pveAvailable) return toast('当前服务器没有可用的 VM 管理环境，不能重置密码', 'error', 4000);
   if (!selectedNames().length) return toast('请先选择机器', 'error');
   $('#newPassword').val('');
   passwordModal.show();
@@ -505,17 +1219,54 @@ async function resetPassword() {
   else toast(r.error || '当前后端无法直接重置客户机密码', 'error', 5000);
 }
 
+async function runSshCommand() {
+  const payload = {
+    host: $('#sshHost').val(),
+    port: Number($('#sshPort').val() || 22),
+    username: $('#sshUser').val() || 'root',
+    password: $('#sshPassword').val(),
+    command: $('#sshCommand').val(),
+    timeout: 30
+  };
+  if (!payload.password) return toast('请输入 SSH 密码', 'error');
+  if (!payload.command) return toast('请输入命令', 'error');
+  $('#btnRunSsh').prop('disabled', true);
+  $('#sshOutput').text(`root@${payload.host}:~# ${payload.command}\n执行中...`);
+  const r = await api.post('/api/hyperv/ssh/exec', payload);
+  $('#btnRunSsh').prop('disabled', false);
+  if (r.ok) {
+    const d = r.data || {};
+    const out = `${d.stdout || ''}${d.stderr ? `\n[stderr]\n${d.stderr}` : ''}\n[exit ${d.exit_code}]`;
+    $('#sshOutput').text(`root@${payload.host}:~# ${payload.command}\n${out}`);
+  } else {
+    $('#sshOutput').text(`root@${payload.host}:~# ${payload.command}\n${r.error || 'SSH 执行失败'}`);
+    toast(r.error || 'SSH 执行失败', 'error', 6000);
+  }
+}
+
 $(async () => {
   createModal = new bootstrap.Modal(document.getElementById('createModal'));
+  ikuaiModal = new bootstrap.Modal(document.getElementById('ikuaiModal'));
   imageModal = new bootstrap.Modal(document.getElementById('imageModal'));
   configModal = new bootstrap.Modal(document.getElementById('configModal'));
   passwordModal = new bootstrap.Modal(document.getElementById('passwordModal'));
+  sshModal = new bootstrap.Modal(document.getElementById('sshModal'));
+  portproxyModal = new bootstrap.Modal(document.getElementById('portproxyModal'));
   $('#btnRefresh').on('click', loadHyperV);
+  $('#newMode').on('change', syncCreateModeFields);
+  $('#btnToggleNetworkAdvanced').on('click', toggleNetworkAdvanced);
+  $('#newInternalStartIp').on('change input', syncInternalStartIpToFields);
+  $('#newInternalBase,#newInternalStart').on('change input', syncInternalFieldsToStartIp);
   $('#btnCreateBatch').on('click', createBatch);
+  $('#btnInstallIkuaiSubmit').on('click', installIkuai);
   $('#btnImportImage').on('click', importImage);
   $('#btnSaveConfig').on('click', saveConfig);
   $('#btnResetPassword').on('click', resetPassword);
+  $('#btnRunSsh').on('click', runSshCommand);
+  $('#btnSavePortproxy').on('click', savePortproxy);
+  $('#sshCommand').on('keydown', function (e) { if (e.key === 'Enter') runSshCommand(); });
   $('#checkAll').on('change', function () { $('.vm-check').prop('checked', this.checked); });
+  $('.advanced-network-field').addClass('d-none');
   await loadHyperV();
   setInterval(loadHyperV, 15000);
 });

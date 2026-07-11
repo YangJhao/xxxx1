@@ -23,6 +23,10 @@
       <div class="dash-metric-label">异常</div>
       <div class="dash-metric-value red" id="serverStatError">0</div>
     </section>
+    <section class="dash-metric-card">
+      <div class="dash-metric-label">静默组</div>
+      <div class="dash-metric-value amber" id="serverStatSilent">0</div>
+    </section>
   </div>
 
   <div class="user-toolbar">
@@ -31,9 +35,14 @@
       <button class="btn btn-warning" id="btnInstallSelected"><i class="bi bi-cloud-arrow-up"></i> 一键安装42轻量</button>
       <button class="btn btn-primary" id="btnUpgradeSelected"><i class="bi bi-cloud-arrow-down"></i> 一键升级</button>
       <button class="btn btn-soft" id="btnDetectLiteSelected"><i class="bi bi-search"></i> 检测轻量</button>
+      <button class="btn btn-soft" id="btnSyncInbounds"><i class="bi bi-arrow-repeat"></i> 同步入站</button>
       <button class="btn btn-soft" id="btnTestSelected"><i class="bi bi-wifi"></i> 测试连接</button>
       <button class="btn btn-soft" id="btnRefreshServers"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+      <button class="btn btn-soft" id="btnExportServers"><i class="bi bi-download"></i> 导出</button>
+      <button class="btn btn-soft" data-bs-toggle="modal" data-bs-target="#serverImportModal" id="btnImportServers"><i class="bi bi-upload"></i> 导入</button>
       <button class="btn btn-soft" id="btnGroupSelected"><i class="bi bi-folder"></i> 批量分组</button>
+      <button class="btn btn-soft" id="btnSilentGroupSelected"><i class="bi bi-eye-slash"></i> 设静默组</button>
+      <button class="btn btn-soft" id="btnUnsilentGroupSelected"><i class="bi bi-eye"></i> 取消静默</button>
       <button class="btn btn-danger" id="btnDeleteSelected"><i class="bi bi-trash3"></i> 批量删除</button>
     </div>
     <div class="toolbar-search">
@@ -61,7 +70,7 @@
     </div>
     <div>
       <span>安装方式</span>
-      <strong>上传本地 install_lite.sh 后执行</strong>
+      <strong>上传安装包，目标机后台执行，中心轮询验收</strong>
     </div>
   </div>
 
@@ -72,6 +81,7 @@
           <th class="check-col"><input class="form-check-input" type="checkbox" id="checkAllServers"></th>
           <th>IP</th>
           <th>分组</th>
+          <th>分组状态</th>
           <th>端口</th>
           <th>账号</th>
           <th>入站数量</th>
@@ -92,8 +102,50 @@
       <button class="mini-btn" id="btnFirstPage"><i class="bi bi-chevron-bar-left"></i></button>
       <button class="mini-btn" id="btnPrevPage"><i class="bi bi-chevron-left"></i></button>
       <span class="page-number" id="pageNumber">1 / 1</span>
+      <label class="page-jump">跳页 <input id="pageJump" type="number" min="1" value="1"></label>
       <button class="mini-btn" id="btnNextPage"><i class="bi bi-chevron-right"></i></button>
       <button class="mini-btn" id="btnLastPage"><i class="bi bi-chevron-bar-right"></i></button>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="serverImportModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content modal-dark">
+      <div class="modal-header">
+        <h5 class="modal-title">导入服务器</h5>
+        <button class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="batch-match-hint mb-3">支持一行一个 IP，或 IP|端口|账号|密码|分组|备注</div>
+        <textarea class="form-control server-import-input" id="serverImportText" rows="10" placeholder="8.218.180.202|22|root|密码|韩国|备用&#10;1.2.3.4 22 root 密码 分组 备注"></textarea>
+        <div class="server-form-grid mt-3">
+          <div>
+            <label class="form-label">默认端口</label>
+            <input class="form-control" id="importServerPort" type="number" min="1" max="65535" value="22">
+          </div>
+          <div>
+            <label class="form-label">默认账号</label>
+            <input class="form-control" id="importServerUsername" value="root">
+          </div>
+          <div>
+            <label class="form-label">默认密码</label>
+            <input class="form-control" id="importServerPassword" type="password" autocomplete="new-password">
+          </div>
+          <div>
+            <label class="form-label">默认分组</label>
+            <input class="form-control" id="importServerGroup" placeholder="可选">
+          </div>
+          <div class="server-note-field">
+            <label class="form-label">默认备注</label>
+            <input class="form-control" id="importServerNote" placeholder="可选">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="btnConfirmServerImport">开始导入</button>
+        <button class="btn btn-soft" data-bs-dismiss="modal">取消</button>
+      </div>
     </div>
   </div>
 </div>
@@ -156,6 +208,13 @@
           <div><label class="form-label">账号</label><input class="form-control" id="editServerUsername"></div>
           <div><label class="form-label">密码</label><input class="form-control" id="editServerPassword" type="password" autocomplete="new-password" placeholder="留空不修改"></div>
           <div><label class="form-label">分组</label><input class="form-control" id="editServerGroup"></div>
+          <div>
+            <label class="form-label">创建显示</label>
+            <label class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="editServerSilentGroup">
+              <span class="form-check-label">静默组</span>
+            </label>
+          </div>
           <div><label class="form-label">备注</label><input class="form-control" id="editServerNote"></div>
         </div>
       </div>
@@ -178,6 +237,10 @@
         <div class="batch-match-hint mb-3" id="serverGroupHint">已选择 0 台服务器</div>
         <label class="form-label">分组名称</label>
         <input class="form-control" id="batchServerGroup" placeholder="留空则设为未分组">
+        <label class="form-check form-switch mt-3">
+          <input class="form-check-input" type="checkbox" id="batchServerSilentGroup">
+          <span class="form-check-label">设为静默组</span>
+        </label>
       </div>
       <div class="modal-footer">
         <button class="btn btn-primary" id="btnConfirmServerGroup">保存</button>
@@ -215,13 +278,27 @@ document.addEventListener('DOMContentLoaded', () => {
     return `<span class="badge bg-secondary">${escapeHtml(text)}</span>`;
   }
 
+  function silentBadge(row) {
+    return row.silent_group
+      ? '<span class="badge bg-warning text-dark">静默组</span>'
+      : '<span class="badge bg-secondary">显示</span>';
+  }
+
+  function inboundCountCell(row) {
+    const count = Number(row.inbound_count || 0);
+    const suffix = row.remote_count_ok === false
+      ? `<span class="count-stale" title="${escapeHtml(row.remote_count_error || '实时数量获取失败，当前为缓存映射')}">缓存</span>`
+      : '';
+    return `<button class="count-link" data-action="view-nodes" data-ip="${escapeHtml(row.ip)}">${count}</button>${suffix}`;
+  }
+
   function filtered() {
     const q = (els.search.value || '').trim().toLowerCase();
     const group = els.groupFilter.value || '';
     let rows = servers;
     if (group) rows = rows.filter(s => (s.group_name || '') === group);
     if (!q) return rows;
-    return rows.filter(s => [s.ip, s.group_name, s.username, s.status, s.install_status, s.note, s.last_error].some(v => String(v || '').toLowerCase().includes(q)));
+    return rows.filter(s => [s.ip, s.group_name, s.silent_group ? '静默组' : '显示', s.username, s.status, s.install_status, s.note, s.last_error].some(v => String(v || '').toLowerCase().includes(q)));
   }
 
   function refreshGroups() {
@@ -235,11 +312,73 @@ document.addEventListener('DOMContentLoaded', () => {
     return Array.from(selected).map(v => parseInt(v, 10)).filter(Boolean);
   }
 
+  function selectedOrFilteredRows() {
+    const ids = selectedIds();
+    if (ids.length) return servers.filter(row => ids.includes(Number(row.id)));
+    return filtered();
+  }
+
+  function csvEscape(value) {
+    const text = String(value ?? '');
+    if (/[",\r\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+    return text;
+  }
+
+  function exportServers() {
+    const rows = selectedOrFilteredRows();
+    if (!rows.length) {
+      toast('没有可导出的服务器', 'error');
+      return;
+    }
+    const headers = ['ip', 'ssh_port', 'username', 'group_name', 'silent_group', 'status', 'install_status', 'inbound_count', 'note', 'last_error', 'updated_at'];
+    const csv = [
+      headers.join(','),
+      ...rows.map(row => headers.map(key => csvEscape(row[key] ?? '')).join(',')),
+    ].join('\r\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 12);
+    link.href = url;
+    link.download = `servers-${stamp}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast(`已导出 ${rows.length} 台服务器`, 'success');
+  }
+
+  async function importServers() {
+    const payload = {
+      text: document.getElementById('serverImportText').value,
+      port: document.getElementById('importServerPort').value,
+      username: document.getElementById('importServerUsername').value,
+      password: document.getElementById('importServerPassword').value,
+      group_name: document.getElementById('importServerGroup').value,
+      note: document.getElementById('importServerNote').value,
+    };
+    const res = await api.post('/api/servers/import', payload);
+    if (!res.ok) return toast(res.error || '导入失败', 'error', 5000);
+    bootstrap.Modal.getInstance(document.getElementById('serverImportModal'))?.hide();
+    document.getElementById('serverImportText').value = '';
+    const skipped = Number(res.skipped || 0);
+    const errorCount = (res.errors || []).length;
+    toast(`已导入 ${res.count || 0} 台${skipped ? `，跳过 ${skipped} 台重复` : ''}${errorCount ? `，${errorCount} 行需检查` : ''}`, 'success', 5000);
+    await loadServers();
+  }
+
+  function syncInboundIds() {
+    const ids = selectedIds();
+    if (ids.length) return ids;
+    return filtered().map(row => Number(row.id)).filter(Boolean);
+  }
+
   function updateStats(rows) {
     document.getElementById('serverStatTotal').textContent = servers.length;
     document.getElementById('serverStatOnline').textContent = servers.filter(s => s.status === 'online').length;
     document.getElementById('serverStatInstalled').textContent = servers.filter(s => s.install_status === 'installed').length;
     document.getElementById('serverStatError').textContent = servers.filter(s => s.status === 'error' || s.install_status === 'failed').length;
+    document.getElementById('serverStatSilent').textContent = new Set(servers.filter(s => s.silent_group).map(s => s.group_name || '未分组')).size;
     els.selectedCount.textContent = selected.size;
     els.matchedCount.textContent = rows.length;
   }
@@ -252,17 +391,23 @@ document.addEventListener('DOMContentLoaded', () => {
     const start = (currentPage - 1) * size;
     const pageRows = rows.slice(start, start + size);
     updateStats(rows);
+    const noteText = row => String(row.last_error || row.note || '-');
+    const compactNote = row => {
+      const text = noteText(row);
+      return text.length > 42 ? `${text.slice(0, 42)}...` : text;
+    };
     els.table.innerHTML = pageRows.map(row => `
       <tr>
         <td class="check-col"><input class="form-check-input row-check" type="checkbox" data-id="${row.id}" ${selected.has(String(row.id)) ? 'checked' : ''}></td>
         <td><strong>${escapeHtml(row.ip)}</strong></td>
         <td>${escapeHtml(row.group_name || '未分组')}</td>
+        <td>${silentBadge(row)}</td>
         <td>${escapeHtml(row.ssh_port)}</td>
         <td>${escapeHtml(row.username)}</td>
-        <td><button class="count-link" data-action="view-nodes" data-ip="${escapeHtml(row.ip)}">${Number(row.inbound_count || 0)}</button></td>
+        <td>${inboundCountCell(row)}</td>
         <td>${statusBadge(row.status)}</td>
         <td>${statusBadge(row.install_status)}</td>
-        <td class="server-note" title="${escapeHtml(row.last_error || row.note || '')}">${escapeHtml(row.last_error || row.note || '-')}</td>
+        <td class="server-note" title="${escapeHtml(noteText(row))}">${escapeHtml(compactNote(row))}</td>
         <td>${escapeHtml((row.updated_at || row.created_at || '').replace('T', ' ').slice(0, 19))}</td>
         <td>
           <div class="line-actions">
@@ -274,9 +419,12 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
         </td>
       </tr>
-    `).join('') || '<tr><td colspan="11" class="text-center text-muted py-4">暂无服务器</td></tr>';
+    `).join('') || '<tr><td colspan="12" class="text-center text-muted py-4">暂无服务器</td></tr>';
     els.pageSummary.textContent = `共 ${rows.length} 条，显示 ${pageRows.length} 条`;
     els.pageNumber.textContent = `${currentPage} / ${pages}`;
+    const pageJump = document.getElementById('pageJump');
+    pageJump.max = String(pages);
+    pageJump.value = String(currentPage);
     els.checkAll.checked = pageRows.length > 0 && pageRows.every(row => selected.has(String(row.id)));
     document.getElementById('btnFirstPage').disabled = currentPage <= 1;
     document.getElementById('btnPrevPage').disabled = currentPage <= 1;
@@ -284,8 +432,8 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btnLastPage').disabled = currentPage >= pages;
   }
 
-  async function loadServers() {
-    const res = await api.get('/api/servers');
+  async function loadServers(includeCounts = false) {
+    const res = await api.get(includeCounts ? '/api/servers?include_counts=1' : '/api/servers');
     if (!res.ok) {
       toast(res.error || '加载服务器失败', 'error');
       return;
@@ -307,6 +455,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     toast(successText, 'success');
     await loadServers();
+  }
+
+  function jumpPage() {
+    const rows = filtered();
+    const size = parseInt(els.pageSize.value || '20', 10);
+    const pages = Math.max(1, Math.ceil(rows.length / size));
+    const input = document.getElementById('pageJump');
+    const next = Math.min(pages, Math.max(1, parseInt(input.value || currentPage, 10) || currentPage));
+    currentPage = next;
+    render();
   }
 
   async function runServerAction(url, ids, successText, options = {}) {
@@ -333,7 +491,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
       toast(successText, 'success', 5000);
-      await loadServers();
+      await loadServers(false);
     } finally {
       buttons.forEach((btn, index) => {
         btn.disabled = false;
@@ -351,6 +509,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('editServerUsername').value = row.username || 'root';
     document.getElementById('editServerPassword').value = '';
     document.getElementById('editServerGroup').value = row.group_name || '';
+    document.getElementById('editServerSilentGroup').checked = Boolean(row.silent_group);
     document.getElementById('editServerNote').value = row.note || '';
     new bootstrap.Modal(document.getElementById('serverEditModal')).show();
   }
@@ -363,6 +522,7 @@ document.addEventListener('DOMContentLoaded', () => {
       username: document.getElementById('editServerUsername').value,
       password: document.getElementById('editServerPassword').value,
       group_name: document.getElementById('editServerGroup').value,
+      silent_group: document.getElementById('editServerSilentGroup').checked,
       note: document.getElementById('editServerNote').value,
     };
     const res = await api.put(`/api/servers/${id}`, payload);
@@ -435,11 +595,12 @@ document.addEventListener('DOMContentLoaded', () => {
         markInstalling: true,
       });
     } else if (btn.dataset.action === 'detect-lite') {
-      await runServerAction('/api/servers/detect-lite', [id], '检测完成，状态和入站映射已刷新', {
+    await runServerAction('/api/servers/detect-lite', [id], '检测完成，状态和入站映射已刷新', {
         id,
         selector: 'button[data-action="detect-lite"]',
         loadingText: '检测中...',
         startText: '正在检测轻量面板安装状态',
+        refreshCounts: true,
       });
     } else if (btn.dataset.action === 'test') {
       await runAction('/api/servers/test', [id], '连接测试完成');
@@ -466,10 +627,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
   document.getElementById('btnTestSelected').addEventListener('click', () => runAction('/api/servers/test', selectedIds(), '连接测试完成'));
+  document.getElementById('btnSyncInbounds').addEventListener('click', () => {
+    const ids = syncInboundIds();
+    if (!ids.length) return toast('没有可同步的服务器', 'error');
+    runServerAction('/api/servers/sync-inbounds', ids, '入站同步完成', {
+      selector: '#btnSyncInbounds',
+      loadingText: '同步中...',
+      startText: `正在同步 ${ids.length} 台服务器入站`,
+      refreshCounts: true,
+    });
+  });
   document.getElementById('btnDetectLiteSelected').addEventListener('click', () => {
     runServerAction('/api/servers/detect-lite', selectedIds(), '检测完成，状态和入站映射已刷新', {
       selector: '#btnDetectLiteSelected',
       loadingText: '检测中...',
+      refreshCounts: true,
       startText: '正在批量检测轻量面板安装状态',
     });
   });
@@ -488,16 +660,39 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!ids.length) return toast('请选择服务器', 'error');
     document.getElementById('serverGroupHint').textContent = `已选择 ${ids.length} 台服务器`;
     document.getElementById('batchServerGroup').value = '';
+    document.getElementById('batchServerSilentGroup').checked = false;
     new bootstrap.Modal(document.getElementById('serverGroupModal')).show();
   });
   document.getElementById('btnConfirmServerGroup').addEventListener('click', async () => {
     const ids = selectedIds();
-    const res = await api.post('/api/servers/batch-group', { ids, group_name: document.getElementById('batchServerGroup').value });
+    const res = await api.post('/api/servers/batch-group', {
+      ids,
+      group_name: document.getElementById('batchServerGroup').value,
+      silent_group: document.getElementById('batchServerSilentGroup').checked,
+    });
     if (!res.ok) return toast(res.error || '分组失败', 'error');
     bootstrap.Modal.getInstance(document.getElementById('serverGroupModal'))?.hide();
     toast(`已更新 ${res.updated || 0} 台`, 'success');
     await loadServers();
   });
+  async function setSelectedGroupsSilent(silent) {
+    const rows = selectedOrFilteredRows();
+    const groups = Array.from(new Set(rows.map(row => row.group_name || '').filter(Boolean)));
+    if (!groups.length) return toast('请选择已有分组的服务器', 'error');
+    if (!confirm(`${silent ? '设为静默组' : '取消静默'}：${groups.join('、')}？`)) return;
+    let updated = 0;
+    for (const group of groups) {
+      const res = await api.post('/api/servers/group-silent', { group_name: group, silent_group: silent });
+      if (!res.ok) return toast(res.error || '设置失败', 'error');
+      updated += Number(res.updated || 0);
+    }
+    toast(`${silent ? '已设为静默组' : '已取消静默'} ${updated} 台`, 'success');
+    await loadServers();
+  }
+  document.getElementById('btnSilentGroupSelected').addEventListener('click', () => setSelectedGroupsSilent(true));
+  document.getElementById('btnUnsilentGroupSelected').addEventListener('click', () => setSelectedGroupsSilent(false));
+  document.getElementById('btnExportServers').addEventListener('click', exportServers);
+  document.getElementById('btnConfirmServerImport').addEventListener('click', importServers);
   document.getElementById('btnSaveServerEdit').addEventListener('click', saveServerEdit);
   document.getElementById('btnRefreshServers').addEventListener('click', loadServers);
   els.search.addEventListener('input', () => { currentPage = 1; render(); });
@@ -507,6 +702,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnPrevPage').addEventListener('click', () => { currentPage -= 1; render(); });
   document.getElementById('btnNextPage').addEventListener('click', () => { currentPage += 1; render(); });
   document.getElementById('btnLastPage').addEventListener('click', () => { currentPage = 999999; render(); });
+  document.getElementById('pageJump').addEventListener('keydown', event => { if (event.key === 'Enter') jumpPage(); });
+  document.getElementById('pageJump').addEventListener('change', jumpPage);
+  document.getElementById('pageJump').addEventListener('blur', jumpPage);
 
   loadServers();
 });

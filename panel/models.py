@@ -107,6 +107,7 @@ class ProxyUser(Base):
     project_name = Column(String(96), nullable=True)
     speed_limit = Column(String(32), nullable=True)
     traffic_limit = Column(String(32), nullable=True)
+    runtime_mode = Column(String(32), nullable=True)
     status = Column(Integer, default=1)
     expire_at = Column(DateTime, nullable=True)
     bytes_in = Column(Integer, default=0)
@@ -162,7 +163,7 @@ class ProxyUser(Base):
             }
             encoded = base64.urlsafe_b64encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
             link = f"vmess://{encoded}"
-            field = f"{host}|{port}|{self.password}|{expire_date}"
+            field = f"{link}|{host}|{port}|{expire_date}"
             inbound_user = self.username
             inbound_password = self.password
         elif proto == "trojan":
@@ -235,6 +236,7 @@ class ProxyUser(Base):
             "project_name": self.project_name,
             "speed_limit": self.speed_limit,
             "traffic_limit": self.traffic_limit,
+            "runtime_mode": self.runtime_mode or "legacy",
             "status": self.status,
             "expire_at": self.expire_at.isoformat() if self.expire_at else None,
             "bytes_in": self.bytes_in,
@@ -413,8 +415,11 @@ class ManagedServer(Base):
     username = Column(String(64), default="root")
     password = Column(String(256), default="")
     group_name = Column(String(96), default="")
+    silent_group = Column(Integer, default=0)
     status = Column(String(32), default="unknown")
     install_status = Column(String(32), default="idle")
+    inbound_count_cache = Column(Integer, default=0)
+    inbound_assignments_cache = Column(Text, default="")
     last_error = Column(Text, default="")
     note = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -427,8 +432,13 @@ class ManagedServer(Base):
             "ssh_port": self.ssh_port,
             "username": self.username,
             "group_name": self.group_name or "",
+            "silent_group": bool(self.silent_group),
             "status": self.status or "unknown",
             "install_status": self.install_status or "idle",
+            "inbound_count": int(self.inbound_count_cache or 0),
+            "inbound_assignments": [item for item in (self.inbound_assignments_cache or "").splitlines() if item],
+            "remote_count_ok": False,
+            "remote_count_source": "cache",
             "last_error": self.last_error or "",
             "note": self.note or "",
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -454,6 +464,7 @@ def _migrate_db():
         ("project_name", "TEXT"),
         ("speed_limit", "TEXT"),
         ("traffic_limit", "TEXT"),
+        ("runtime_mode", "TEXT"),
     ]
     alter_admin = [
         ("display_name", "TEXT"),
@@ -471,6 +482,24 @@ def _migrate_db():
             msg = str(e).lower()
             if "duplicate" not in msg and "already" not in msg and "exist" not in msg:
                 print(f"[migrate] ! managed_servers.group_name: {e}")
+        try:
+            conn.execute(text("ALTER TABLE managed_servers ADD COLUMN silent_group INTEGER DEFAULT 0"))
+            print("[migrate] + managed_servers.silent_group")
+        except Exception as e:
+            msg = str(e).lower()
+            if "duplicate" not in msg and "already" not in msg and "exist" not in msg:
+                print(f"[migrate] ! managed_servers.silent_group: {e}")
+        for col_name, col_type in [
+            ("inbound_count_cache", "INTEGER DEFAULT 0"),
+            ("inbound_assignments_cache", "TEXT DEFAULT ''"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE managed_servers ADD COLUMN {col_name} {col_type}"))
+                print(f"[migrate] + managed_servers.{col_name}")
+            except Exception as e:
+                msg = str(e).lower()
+                if "duplicate" not in msg and "already" not in msg and "exist" not in msg:
+                    print(f"[migrate] ! managed_servers.{col_name}: {e}")
         for col_name, col_type in alter_proxy:
             try:
                 conn.execute(text(f"ALTER TABLE proxy_users ADD COLUMN {col_name} {col_type}"))

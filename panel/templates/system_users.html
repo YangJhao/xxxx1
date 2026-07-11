@@ -146,7 +146,7 @@ function openAdminModal(row = null) {
   $('#adminDisplayName').val(row ? row.display_name : '');
   $('#adminRole').val(row ? (row.role === '普通管理员' ? '普通管理员' : '普通用户') : '普通用户');
   $('#adminPassword').val('');
-  renderPermissionGrid(row ? String(row.permissions || '').split(',').filter(Boolean) : ['dashboard', 'lines', 'nodes', 'customers']);
+  renderPermissionGrid(row ? String(row.permissions || '').split(',').filter(Boolean) : ['dashboard', 'lines', 'nodes']);
   new bootstrap.Modal(document.getElementById('adminModal')).show();
 }
 

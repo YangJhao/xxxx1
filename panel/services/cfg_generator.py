@@ -412,21 +412,28 @@ def _ensure_nat_jump(hook: str, chain: str):
         _run_iptables(["-t", "nat", "-I", hook, "1", "-j", chain])
 
 
+def _remove_nat_jump_and_chain(chain: str) -> None:
+    for hook in ("PREROUTING", "OUTPUT"):
+        for _ in range(20):
+            check = _run_iptables(["-t", "nat", "-C", hook, "-j", chain])
+            if check.returncode != 0:
+                break
+            _run_iptables(["-t", "nat", "-D", hook, "-j", chain])
+    _run_iptables(["-t", "nat", "-F", chain])
+    _run_iptables(["-t", "nat", "-X", chain])
+
+
 def _apply_linux_nat(session) -> None:
     if os.name == "nt":
         return
     chain = "42IPWIN_DNAT"
-    if _run_iptables(["-t", "nat", "-N", chain]).returncode != 0:
-        _run_iptables(["-t", "nat", "-F", chain])
-    _ensure_nat_jump("PREROUTING", chain)
-    _ensure_nat_jump("OUTPUT", chain)
-
+    rules = []
     users = session.query(ProxyUser).filter_by(status=1).all()
     for user in users:
         line = user.line
         if not line or line.status != 1:
             continue
-        if (user.protocol or "").lower() == "socks5" and _listen_ip_for_protocol(line, user.protocol):
+        if _listen_ip_for_protocol(line, user.protocol):
             continue
         public_ip = (line.public_ip or "").strip()
         internal_ip = (line.internal_ip or "").strip()
@@ -436,7 +443,7 @@ def _apply_linux_nat(session) -> None:
             continue
         port = str(_user_port(user))
         for proto in _nat_protocols(user.protocol):
-            _run_iptables([
+            rules.append([
                 "-t", "nat", "-A", chain,
                 "-d", public_ip,
                 "-p", proto,
@@ -444,6 +451,196 @@ def _apply_linux_nat(session) -> None:
                 "-j", "DNAT",
                 "--to-destination", f"{internal_ip}:{port}",
             ])
+    if not rules:
+        _remove_nat_jump_and_chain(chain)
+        return
+    if _run_iptables(["-t", "nat", "-N", chain]).returncode != 0:
+        _run_iptables(["-t", "nat", "-F", chain])
+    _ensure_nat_jump("PREROUTING", chain)
+    _ensure_nat_jump("OUTPUT", chain)
+    for rule in rules:
+        _run_iptables(rule)
+
+
+def _generate_cfg(
+    session,
+    line_ids: set[int] | None = None,
+    exclude_line_ids: set[int] | None = None,
+    controller_port: int = 9090,
+    log_path: str = SING_BOX_LOG,
+) -> str:
+    users_query = (
+        session.query(ProxyUser)
+        .filter(ProxyUser.status == 1)
+        .filter((ProxyUser.runtime_mode.is_(None)) | (ProxyUser.runtime_mode != "inbound_instance"))
+    )
+    lines_query = session.query(Line).filter(Line.status == 1).order_by(Line.id)
+    if line_ids is not None:
+        users_query = users_query.filter(ProxyUser.line_id.in_(line_ids))
+        lines_query = lines_query.filter(Line.id.in_(line_ids))
+    elif exclude_line_ids:
+        users_query = users_query.filter(~ProxyUser.line_id.in_(exclude_line_ids))
+        lines_query = lines_query.filter(~Line.id.in_(exclude_line_ids))
+
+    users = users_query.all()
+    lines = lines_query.all()
+    cfg = {
+        "log": {
+            "disabled": False,
+            "level": SING_BOX_LOG_LEVEL,
+            "output": log_path,
+            "timestamp": True,
+        },
+        "experimental": {
+            "clash_api": {
+                "external_controller": f"127.0.0.1:{controller_port}",
+                "secret": "",
+            }
+        },
+        "inbounds": [],
+        "outbounds": [
+            {"type": "direct", "tag": "direct"},
+            {"type": "block", "tag": "block"},
+        ],
+        "route": {"rules": []},
+    }
+    local_ips = _local_ipv4s()
+
+    for line in lines:
+        line_users = [u for u in users if u.line_id == line.id]
+        if not line_users:
+            continue
+        bind_ip = _bind_ip(line, local_ips)
+        if os.name == "nt" and not bind_ip:
+            continue
+        listen_by_proto = {
+            proto: _listen_ip_for_protocol(line, proto, local_ips)
+            for proto in {u.protocol for u in line_users}
+        }
+        if not any(listen_by_proto.values()):
+            continue
+
+        out_tag = _outbound_tag(line)
+        iface = _line_interface(line)
+        outbound = {
+            "type": "direct",
+            "tag": out_tag,
+        }
+        outbound_bind_ip = _outbound_bind_ip(line, local_ips)
+        if os.name != "nt" and iface in psutil.net_if_addrs():
+            outbound["bind_interface"] = iface
+            if outbound_bind_ip:
+                outbound["inet4_bind_address"] = outbound_bind_ip
+        elif outbound_bind_ip:
+            outbound["inet4_bind_address"] = outbound_bind_ip
+        elif os.name == "nt":
+            outbound["inet4_bind_address"] = bind_ip
+        cfg["outbounds"].append(outbound)
+
+        for user in [u for u in line_users if u.protocol == "socks5"]:
+            listen_ip = listen_by_proto.get(user.protocol) or ""
+            if not listen_ip:
+                continue
+            tag = _user_inbound_tag(user)
+            cfg["inbounds"].append({
+                "type": "socks",
+                "tag": tag,
+                "listen": listen_ip,
+                "listen_port": _user_port(user),
+                "users": [_auth_user(user)],
+            })
+            _add_route(cfg, tag, out_tag)
+
+        for user in [u for u in line_users if u.protocol == "http"]:
+            listen_ip = listen_by_proto.get(user.protocol) or ""
+            if not listen_ip:
+                continue
+            tag = _user_inbound_tag(user)
+            cfg["inbounds"].append({
+                "type": "http",
+                "tag": tag,
+                "listen": listen_ip,
+                "listen_port": _user_port(user),
+                "users": [_auth_user(user)],
+            })
+            _add_route(cfg, tag, out_tag)
+
+        for user in [u for u in line_users if u.protocol == "ss"]:
+            listen_ip = listen_by_proto.get(user.protocol) or ""
+            if not listen_ip:
+                continue
+            tag = _user_inbound_tag(user)
+            cfg["inbounds"].append({
+                "type": "shadowsocks",
+                "tag": tag,
+                "listen": listen_ip,
+                "listen_port": _user_port(user),
+                "method": user.ss_method or "aes-256-gcm",
+                "password": user.ss_password or user.password,
+            })
+            _add_route(cfg, tag, out_tag)
+
+        for user in [u for u in line_users if u.protocol == "vless"]:
+            listen_ip = listen_by_proto.get(user.protocol) or ""
+            if not listen_ip:
+                continue
+            tag = _user_inbound_tag(user)
+            cfg["inbounds"].append({
+                "type": "vless",
+                "tag": tag,
+                "listen": listen_ip,
+                "listen_port": _user_port(user),
+                "users": [_uuid_user(user)],
+            })
+            _add_route(cfg, tag, out_tag)
+
+        for user in [u for u in line_users if u.protocol == "vmess"]:
+            listen_ip = listen_by_proto.get(user.protocol) or ""
+            if not listen_ip:
+                continue
+            tag = _user_inbound_tag(user)
+            cfg["inbounds"].append({
+                "type": "vmess",
+                "tag": tag,
+                "listen": listen_ip,
+                "listen_port": _user_port(user),
+                "users": [_uuid_user(user)],
+            })
+            _add_route(cfg, tag, out_tag)
+
+        for user in [u for u in line_users if u.protocol == "trojan"]:
+            listen_ip = listen_by_proto.get(user.protocol) or ""
+            if not listen_ip:
+                continue
+            tag = _user_inbound_tag(user)
+            cfg["inbounds"].append({
+                "type": "trojan",
+                "tag": tag,
+                "listen": listen_ip,
+                "listen_port": _user_port(user),
+                "users": [_password_user(user)],
+                "tls": _tls_config(),
+            })
+            _add_route(cfg, tag, out_tag)
+
+        for user in [u for u in line_users if u.protocol == "hysteria2"]:
+            listen_ip = listen_by_proto.get(user.protocol) or ""
+            if not listen_ip:
+                continue
+            tag = _user_inbound_tag(user)
+            cfg["inbounds"].append({
+                "type": "hysteria2",
+                "tag": tag,
+                "listen": listen_ip,
+                "listen_port": _user_port(user),
+                "users": [_password_user(user)],
+                "tls": _tls_config(),
+            })
+            _add_route(cfg, tag, out_tag)
+
+        # WireGuard is managed by the system wg-quick service, not sing-box.
+
+    return json.dumps(cfg, ensure_ascii=False, indent=2)
 
 
 def generate_cfg(session=None) -> str:
@@ -451,172 +648,32 @@ def generate_cfg(session=None) -> str:
     if own_session:
         session = get_session()
     try:
-        users = session.query(ProxyUser).filter_by(status=1).all()
-        lines = [
-            line
-            for line in session.query(Line).order_by(Line.id).all()
-            if line.status == 1
-        ]
-        cfg = {
-            "log": {
-                "disabled": False,
-                "level": SING_BOX_LOG_LEVEL,
-                "output": SING_BOX_LOG,
-                "timestamp": True,
-            },
-            "experimental": {
-                "clash_api": {
-                    "external_controller": "127.0.0.1:9090",
-                    "secret": "",
-                }
-            },
-            "inbounds": [],
-            "outbounds": [
-                {"type": "direct", "tag": "direct"},
-                {"type": "block", "tag": "block"},
-            ],
-            "route": {"rules": []},
-        }
-        local_ips = _local_ipv4s()
-
-        for line in lines:
-            line_users = [u for u in users if u.line_id == line.id]
-            if not line_users:
-                continue
-            bind_ip = _bind_ip(line, local_ips)
-            if os.name == "nt" and not bind_ip:
-                continue
-            listen_by_proto = {
-                proto: _listen_ip_for_protocol(line, proto, local_ips)
-                for proto in {u.protocol for u in line_users}
-            }
-            if not any(listen_by_proto.values()):
-                continue
-
-            out_tag = _outbound_tag(line)
-            iface = _line_interface(line)
-            outbound = {
-                "type": "direct",
-                "tag": out_tag,
-            }
-            outbound_bind_ip = _outbound_bind_ip(line, local_ips)
-            if os.name != "nt" and iface in psutil.net_if_addrs():
-                outbound["bind_interface"] = iface
-                if outbound_bind_ip:
-                    outbound["inet4_bind_address"] = outbound_bind_ip
-            elif outbound_bind_ip:
-                outbound["inet4_bind_address"] = outbound_bind_ip
-            elif os.name == "nt":
-                outbound["inet4_bind_address"] = bind_ip
-            cfg["outbounds"].append(outbound)
-
-            for user in [u for u in line_users if u.protocol == "socks5"]:
-                listen_ip = listen_by_proto.get(user.protocol) or ""
-                if not listen_ip:
-                    continue
-                tag = _user_inbound_tag(user)
-                cfg["inbounds"].append({
-                    "type": "socks",
-                    "tag": tag,
-                    "listen": listen_ip,
-                    "listen_port": _user_port(user),
-                    "users": [_auth_user(user)],
-                })
-                _add_route(cfg, tag, out_tag)
-
-            for user in [u for u in line_users if u.protocol == "http"]:
-                listen_ip = listen_by_proto.get(user.protocol) or ""
-                if not listen_ip:
-                    continue
-                tag = _user_inbound_tag(user)
-                cfg["inbounds"].append({
-                    "type": "http",
-                    "tag": tag,
-                    "listen": listen_ip,
-                    "listen_port": _user_port(user),
-                    "users": [_auth_user(user)],
-                })
-                _add_route(cfg, tag, out_tag)
-
-            for user in [u for u in line_users if u.protocol == "ss"]:
-                listen_ip = listen_by_proto.get(user.protocol) or ""
-                if not listen_ip:
-                    continue
-                tag = _user_inbound_tag(user)
-                cfg["inbounds"].append({
-                    "type": "shadowsocks",
-                    "tag": tag,
-                    "listen": listen_ip,
-                    "listen_port": _user_port(user),
-                    "method": user.ss_method or "aes-256-gcm",
-                    "password": user.ss_password or user.password,
-                })
-                _add_route(cfg, tag, out_tag)
-
-            for user in [u for u in line_users if u.protocol == "vless"]:
-                listen_ip = listen_by_proto.get(user.protocol) or ""
-                if not listen_ip:
-                    continue
-                tag = _user_inbound_tag(user)
-                cfg["inbounds"].append({
-                    "type": "vless",
-                    "tag": tag,
-                    "listen": listen_ip,
-                    "listen_port": _user_port(user),
-                    "users": [_uuid_user(user)],
-                })
-                _add_route(cfg, tag, out_tag)
-
-            for user in [u for u in line_users if u.protocol == "vmess"]:
-                listen_ip = listen_by_proto.get(user.protocol) or ""
-                if not listen_ip:
-                    continue
-                tag = _user_inbound_tag(user)
-                cfg["inbounds"].append({
-                    "type": "vmess",
-                    "tag": tag,
-                    "listen": listen_ip,
-                    "listen_port": _user_port(user),
-                    "users": [_uuid_user(user)],
-                })
-                _add_route(cfg, tag, out_tag)
-
-            for user in [u for u in line_users if u.protocol == "trojan"]:
-                listen_ip = listen_by_proto.get(user.protocol) or ""
-                if not listen_ip:
-                    continue
-                tag = _user_inbound_tag(user)
-                cfg["inbounds"].append({
-                    "type": "trojan",
-                    "tag": tag,
-                    "listen": listen_ip,
-                    "listen_port": _user_port(user),
-                    "users": [_password_user(user)],
-                    "tls": _tls_config(),
-                })
-                _add_route(cfg, tag, out_tag)
-
-            for user in [u for u in line_users if u.protocol == "hysteria2"]:
-                listen_ip = listen_by_proto.get(user.protocol) or ""
-                if not listen_ip:
-                    continue
-                tag = _user_inbound_tag(user)
-                cfg["inbounds"].append({
-                    "type": "hysteria2",
-                    "tag": tag,
-                    "listen": listen_ip,
-                    "listen_port": _user_port(user),
-                    "users": [_password_user(user)],
-                    "tls": _tls_config(),
-                })
-                _add_route(cfg, tag, out_tag)
-
-            # WireGuard is managed by the system wg-quick service, not sing-box.
-
-        return json.dumps(cfg, ensure_ascii=False, indent=2)
+        if (os.environ.get("IPWIN42_SINGBOX_MODE") or "").strip().lower() in {"per_line", "per-line", "line", "multi"}:
+            return _generate_cfg(session, line_ids=set())
+        return _generate_cfg(session, exclude_line_ids=_hybrid_excluded_line_ids(session))
     finally:
         if own_session:
             session.close()
+
+
+def generate_cfg_for_lines(
+    session,
+    line_ids,
+    controller_port: int = 9090,
+    log_path: str = SING_BOX_LOG,
+) -> str:
+    ids = {int(value) for value in (line_ids or []) if str(value).strip().isdigit()}
+    return _generate_cfg(session, ids, controller_port=controller_port, log_path=log_path)
+
+
+def _hybrid_excluded_line_ids(session) -> set[int]:
+    raw = (os.environ.get("IPWIN42_PER_LINE_IPS") or "").strip()
+    if not raw:
+        return set()
+    ips = {item.strip() for item in re.split(r"[\s,;]+", raw) if item.strip()}
+    if not ips:
+        return set()
+    return {line.id for line in session.query(Line).filter(Line.public_ip.in_(ips)).all()}
 
 
 def write_cfg(session=None) -> str:

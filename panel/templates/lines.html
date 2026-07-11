@@ -28,6 +28,7 @@
     <button class="mini-btn warning" id="btnBatchChangeMac2" disabled>更换所选 MAC</button>
     <button class="mini-btn danger" id="btnBatchDelete2" disabled>删除所选</button>
   </div>
+  <div class="line-op-status" id="lineOpStatus">线路操作待命</div>
   <table class="line-table ops-table">
     <thead>
       <tr>
@@ -36,6 +37,7 @@
         <th>线路名</th>
         <th>公网 IP</th>
         <th>内网 IP</th>
+        <th>VM 内网 IP</th>
         <th>MAC</th>
         <th>网卡</th>
         <th>连接数</th>
@@ -57,9 +59,9 @@
         <button class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <label class="form-label">每个主网卡固定槽位</label>
-        <input class="form-control" id="adapterCount" type="number" min="13" max="13" value="13" readonly>
-        <div class="form-hint mt-2">Linux 线路锁定为每根主网线 13 个虚拟 MAC 网卡，加主网卡共 14 个 IP 位。</div>
+        <label class="form-label">创建数量</label>
+        <input class="form-control" id="adapterCount" type="number" min="1" max="500" value="14">
+        <div class="form-hint mt-2">按需追加虚拟 MAC 网卡；创建时自动分配固定内网 IP。</div>
         <label class="form-label mt-3">指定主网卡</label>
         <select class="form-select" id="adapterParent">
           <option value="">读取中...</option>
@@ -99,6 +101,45 @@
 
 {% block scripts %}
 <script>
+if (!window.$) {
+  window.$ = function(selector) {
+    if (typeof selector === 'function') {
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', selector);
+      else selector();
+      return;
+    }
+    const nodes = selector instanceof Element || selector === window || selector === document
+      ? [selector]
+      : Array.from(document.querySelectorAll(selector));
+    const api = {
+      nodes,
+      removeClass(cls) { const parts = String(cls || '').split(/\s+/).filter(Boolean); nodes.forEach(el => el.classList.remove(...parts)); return api; },
+      addClass(cls) { const parts = String(cls || '').split(/\s+/).filter(Boolean); nodes.forEach(el => el.classList.add(...parts)); return api; },
+      toggleClass(cls, force) { nodes.forEach(el => el.classList.toggle(cls, force)); return api; },
+      text(value) { if (value === undefined) return nodes[0]?.textContent || ''; nodes.forEach(el => { el.textContent = value; }); return api; },
+      prop(name, value) { if (value === undefined) return nodes[0]?.[name]; nodes.forEach(el => { el[name] = value; }); return api; },
+      empty() { nodes.forEach(el => { el.innerHTML = ''; }); return api; },
+      append(html) { nodes.forEach(el => el.insertAdjacentHTML('beforeend', html)); return api; },
+      val(value) { if (value === undefined) return nodes[0]?.value || ''; nodes.forEach(el => { el.value = value; }); return api; },
+      each(fn) { nodes.forEach((el, idx) => fn.call(el, idx, el)); return api; },
+      on(event, selectorOrHandler, handler) {
+        nodes.forEach(el => {
+          if (typeof selectorOrHandler === 'function') {
+            el.addEventListener(event, selectorOrHandler);
+          } else {
+            el.addEventListener(event, ev => {
+              const target = ev.target.closest(selectorOrHandler);
+              if (target && el.contains(target)) handler.call(target, ev);
+            });
+          }
+        });
+        return api;
+      },
+    };
+    return api;
+  };
+}
+
 let allLines = [];
 let masterInterfaces = [];
 let lineCapabilities = {};
@@ -108,7 +149,20 @@ const selectedLineIds = new Set();
 let dhcpLoopRunning = false;
 let dhcpLoopIds = [];
 let dhcpLoopTimer = null;
+const DHCP_REQUEST_BATCH_SIZE = 30;
+const DHCP_BATCH_MAX_ROUNDS = 5;
 const DHCP_LOOP_INTERVAL_MS = 5000;
+let dhcpCurrentBatchIds = [];
+let dhcpCurrentBatchRound = 0;
+
+function setLineStatus(message, type = 'info') {
+  const el = $('#lineOpStatus');
+  el.removeClass('success error info running').addClass(type).text(message || '线路操作待命');
+}
+
+function errorText(r, fallback) {
+  return (r && (r.error || r.message)) || fallback;
+}
 
 function speedText(rx, tx) {
   return `下 ${formatBytes(rx || 0)}/s<br>上 ${formatBytes(tx || 0)}/s`;
@@ -135,6 +189,13 @@ function ipCell(line) {
   return `<span class="state-pill pending">待 DHCP${lease}</span>`;
 }
 
+function vmInternalCell(line) {
+  if (!line.vm_internal_ip) return '<span class="empty-cell">-</span>';
+  const name = line.vm_name ? `<div class="small-cell">${escapeHtml(line.vm_name)}</div>` : '';
+  const ssh = line.vm_ssh_port ? `<div class="small-cell">SSH ${escapeHtml(line.vm_ssh_listen || line.public_ip || '')}:${escapeHtml(line.vm_ssh_port)}</div>` : '';
+  return `<span class="proto-pill">${escapeHtml(line.vm_internal_ip)}</span>${name}${ssh}`;
+}
+
 function loadSystemInfo() {
   $('#statDetected').text(allLines.filter(hasPublicIp).length);
   $('#statLines').text(allLines.length);
@@ -152,7 +213,9 @@ function selectNoPublicIpLines() {
     .filter(line => !hasPublicIp(line))
     .forEach(line => selectedLineIds.add(Number(line.id)));
   updateBulkState();
-  toast(`已选择 ${selectedLineIds.size} 条无公网 IP 线路`, selectedLineIds.size ? 'success' : 'error');
+  const msg = `已选择 ${selectedLineIds.size} 条无公网 IP 线路`;
+  setLineStatus(msg, selectedLineIds.size ? 'success' : 'error');
+  toast(msg, selectedLineIds.size ? 'success' : 'error');
 }
 
 function updateBulkState() {
@@ -183,14 +246,18 @@ async function loadLines() {
   loadSystemInfo();
   const tb = $('#lineTable').empty();
   if (!allLines.length) {
-    tb.append('<tr><td colspan="12" class="empty-cell">暂无线路，点击“更新列表”从网卡读取 IP</td></tr>');
+    tb.append('<tr><td colspan="13" class="empty-cell">暂无线路，点击“更新列表”从网卡读取 IP</td></tr>');
     updateBulkState();
     return;
   }
   allLines.forEach(l => {
+    const adapterDisabled = Number(l.status || 0) === 0;
+    const adapterToggle = !l.is_master
+      ? `<button class="mini-btn ${adapterDisabled ? '' : 'warning'}" onclick="toggleAdapterState(${l.id}, ${adapterDisabled ? 'true' : 'false'})">${adapterDisabled ? '启用网卡' : '禁用网卡'}</button>`
+      : '';
     const ops = l.is_master
       ? '<span class="state-pill off">静默</span>'
-      : `<button class="mini-btn" onclick="changeMac(${l.id})">一键更换MAC</button><button class="mini-btn danger" onclick="deleteLine(${l.id})">删除</button>`;
+      : `${adapterToggle}<button class="mini-btn" onclick="changeMac(${l.id})">一键更换MAC</button><button class="mini-btn danger" onclick="deleteLine(${l.id})">删除</button>`;
     tb.append(`
       <tr class="${l.is_master ? 'master-row' : ''}" data-line-id="${l.id}" data-line-ip="${escapeHtml(l.public_ip || '')}">
         <td class="select-cell">${l.is_master ? '' : `<input class="form-check-input line-check" type="checkbox" value="${l.id}">`}</td>
@@ -198,6 +265,7 @@ async function loadLines() {
         <td class="strong-cell">${escapeHtml(l.name || '-')} ${mainBadge(l)}</td>
         <td>${ipCell(l)}</td>
         <td>${escapeHtml(l.internal_ip || '-')}</td>
+        <td>${vmInternalCell(l)}</td>
         <td class="small-cell">${escapeHtml(l.mac || '-')}</td>
         <td>${escapeHtml(l.interface || '-')}</td>
         <td><span class="port-pill">${escapeHtml(l.connection_count || 0)}</span></td>
@@ -226,25 +294,60 @@ function focusLineFromQuery() {
 
 async function deleteLine(id) {
   if (!confirm('确定删除这条虚拟线路？')) return;
+  setLineStatus(`正在删除线路 ${id}...`, 'running');
   const r = await api.del('/api/lines/' + id);
-  if (r.ok) { toast('已删除', 'success'); loadLines(); }
-  else toast(r.error || '删除失败', 'error');
+  if (r.ok) {
+    const iface = r.data.deleted_interface || '-';
+    const msg = `已删除线路 ${id}，接口 ${iface}`;
+    setLineStatus(msg, 'success');
+    toast(msg, 'success', 5000);
+    await syncLines(true);
+  } else {
+    const msg = errorText(r, '删除失败');
+    setLineStatus(msg, 'error');
+    toast(msg, 'error', 8000);
+  }
+}
+
+async function toggleAdapterState(id, enabled) {
+  const line = allLines.find(x => Number(x.id) === Number(id)) || {};
+  const label = enabled ? '启用' : '禁用';
+  const detail = `${line.public_ip || '-'} / ${line.interface || line.name || id}`;
+  if (!confirm(`确定${label}这条线路对应的 Windows 网卡吗？\n${detail}\n\n这不会删除线路记录，只会${enabled ? '恢复' : '释放'}这张网卡。`)) return;
+  setLineStatus(`正在${label}网卡：${detail}`, 'running');
+  const r = await api.post(`/api/lines/${id}/adapter-state`, { enabled });
+  if (r.ok) {
+    const adapter = (r.data || {}).adapter || {};
+    const msg = `已${label}网卡：${adapter.interface || detail}，状态 ${adapter.status || '-'}`;
+    setLineStatus(msg, 'success');
+    toast(msg, 'success', 6000);
+    await syncLines(true);
+  } else {
+    const msg = errorText(r, `${label}网卡失败`);
+    setLineStatus(msg, 'error');
+    toast(msg, 'error', 9000);
+  }
 }
 
 async function batchDeleteLines() {
   const ids = Array.from(selectedLineIds);
   if (!ids.length) return toast('请选择要删除的线路', 'error');
   if (!confirm(`确定删除选中的 ${ids.length} 条虚拟线路？会同时删除对应虚拟网卡。`)) return;
-  $('#btnBatchDelete,#btnBatchDelete2').prop('disabled', true);
+  setLineStatus(`正在删除所选 ${ids.length} 条线路...`, 'running');
+  $('#btnBatchDelete,#btnBatchDelete2,#btnBatchChangeMac,#btnBatchChangeMac2').prop('disabled', true);
   const r = await api.post('/api/lines/batch-delete', { ids });
   if (r.ok) {
     selectedLineIds.clear();
     const deleted = r.data.deleted_count || 0;
     const errors = r.data.errors || [];
-    toast(`已删除 ${deleted} 条${errors.length ? `，失败 ${errors.length} 条` : ''}`, errors.length ? 'error' : 'success', 7000);
-    await loadLines();
+    const msg = `已删除 ${deleted} 条${errors.length ? `，失败 ${errors.length} 条：${errors.slice(0, 2).map(x => x.error).join('；')}` : ''}`;
+    setLineStatus(msg, errors.length ? 'error' : 'success');
+    toast(msg, errors.length ? 'error' : 'success', 9000);
+    await syncLines(true);
   } else {
-    toast(r.error || '批量删除失败', 'error');
+    const msg = errorText(r, '批量删除失败');
+    setLineStatus(msg, 'error');
+    toast(msg, 'error', 9000);
     updateBulkState();
   }
 }
@@ -253,16 +356,22 @@ async function batchChangeMac() {
   const ids = Array.from(selectedLineIds);
   if (!ids.length) return toast('请选择要更换的线路', 'error');
   if (!confirm(`确定一键更换选中的 ${ids.length} 条线路 MAC？公网 IP 可能会变化。`)) return;
+  setLineStatus(`正在更换 ${ids.length} 条线路 MAC...`, 'running');
   $('#btnBatchChangeMac,#btnBatchChangeMac2,#btnBatchDelete,#btnBatchDelete2').prop('disabled', true);
   const r = await api.post('/api/lines/batch-change-mac', { ids });
   if (r.ok) {
     selectedLineIds.clear();
     const changed = r.data.changed_count || 0;
     const errors = r.data.errors || [];
-    toast(`已更换 ${changed} 条${errors.length ? `，失败 ${errors.length} 条` : ''}`, errors.length ? 'error' : 'success', 8000);
-    await loadLines();
+    const gotPublic = (r.data.changed || []).filter(x => hasPublicIp(x)).length;
+    const msg = `已更换 ${changed} 条，拿到公网 ${gotPublic} 条${errors.length ? `，失败 ${errors.length} 条：${errors.slice(0, 2).map(x => x.error).join('；')}` : ''}`;
+    setLineStatus(msg, errors.length ? 'error' : 'success');
+    toast(msg, errors.length ? 'error' : 'success', 9000);
+    await syncLines(true);
   } else {
-    toast(r.error || '批量更换失败', 'error');
+    const msg = errorText(r, '批量更换失败');
+    setLineStatus(msg, 'error');
+    toast(msg, 'error', 9000);
     updateBulkState();
   }
 }
@@ -282,41 +391,69 @@ async function batchRequestDhcp() {
   if (!dhcpLoopIds.length) return toast('当前没有需要请求 DHCP 的无公网 IP 网卡', 'success');
   dhcpLoopRunning = true;
   updateBulkState();
-  toast(`开始循环请求 DHCP，间隔 ${DHCP_LOOP_INTERVAL_MS / 1000} 秒`, 'success', 5000);
+  const msg = `开始循环请求 DHCP：${dhcpLoopIds.length} 条`;
+  setLineStatus(msg, 'running');
+  toast(msg, 'success', 5000);
   await runDhcpLoopRound();
 }
 
 function stopDhcpLoop(message) {
   dhcpLoopRunning = false;
   dhcpLoopIds = [];
+  dhcpCurrentBatchIds = [];
+  dhcpCurrentBatchRound = 0;
   if (dhcpLoopTimer) {
     clearTimeout(dhcpLoopTimer);
     dhcpLoopTimer = null;
   }
   updateBulkState();
+  setLineStatus(message || 'DHCP 已停止', 'info');
   if (message) toast(message, 'success', 5000);
 }
 
 async function runDhcpLoopRound() {
   if (!dhcpLoopRunning) return;
-  const ids = dhcpLoopIds.slice();
-  if (!ids.length) {
+  if (!dhcpLoopIds.length) {
     stopDhcpLoop('所有选中网卡已拿到公网 IP');
     return;
   }
+  if (!dhcpCurrentBatchIds.length) {
+    dhcpCurrentBatchIds = dhcpLoopIds.slice(0, DHCP_REQUEST_BATCH_SIZE);
+    dhcpCurrentBatchRound = 0;
+  }
+  const ids = dhcpCurrentBatchIds.slice();
+  const batchSet = new Set(ids.map(id => Number(id)));
+  dhcpCurrentBatchRound += 1;
   $('#btnBatchRequestDhcp,#btnBatchChangeMac,#btnBatchChangeMac2,#btnBatchDelete,#btnBatchDelete2').prop('disabled', true);
   $('#btnBatchRequestDhcp').prop('disabled', false).addClass('danger').text('停止 DHCP');
+  setLineStatus(`DHCP 请求中：本批 ${ids.length} 条，第 ${dhcpCurrentBatchRound}/${DHCP_BATCH_MAX_ROUNDS} 次，剩余 ${dhcpLoopIds.length} 条...`, 'running');
   const r = await api.post('/api/lines/batch-request-dhcp', { ids });
   if (r.ok) {
     const requested = r.data.requested_count || 0;
     const acquired = r.data.acquired_count || 0;
     const errors = r.data.errors || [];
-    await loadLines();
+    await syncLines(true);
     const byId = new Map(allLines.map(line => [Number(line.id), line]));
-    dhcpLoopIds = dhcpLoopIds.filter(id => {
+    const currentPending = [];
+    const otherPending = [];
+    dhcpLoopIds.forEach(id => {
       const line = byId.get(Number(id));
-      return line && !hasPublicIp(line);
+      if (!line || hasPublicIp(line)) return;
+      if (batchSet.has(Number(id))) currentPending.push(Number(id));
+      else otherPending.push(Number(id));
     });
+    if (!currentPending.length) {
+      dhcpLoopIds = otherPending;
+      dhcpCurrentBatchIds = [];
+      dhcpCurrentBatchRound = 0;
+    } else if (dhcpCurrentBatchRound >= DHCP_BATCH_MAX_ROUNDS) {
+      dhcpLoopIds = otherPending.concat(currentPending);
+      dhcpCurrentBatchIds = [];
+      dhcpCurrentBatchRound = 0;
+    } else {
+      dhcpLoopIds = currentPending.concat(otherPending);
+      dhcpCurrentBatchIds = currentPending;
+    }
     selectedLineIds.clear();
     dhcpLoopIds.forEach(id => selectedLineIds.add(Number(id)));
     updateBulkState();
@@ -325,10 +462,14 @@ async function runDhcpLoopRound() {
       stopDhcpLoop(`DHCP 完成，${requested} 条里拿到公网 ${acquired} 条`);
       return;
     }
-    toast(`DHCP 请求中：本轮 ${requested} 条，拿到公网 ${acquired} 条，剩余 ${dhcpLoopIds.length} 条${errors.length ? `，失败 ${errors.length} 条` : ''}`, errors.length ? 'error' : 'success', 5000);
+    const msg = `DHCP 请求中：本批 ${requested} 条，第 ${dhcpCurrentBatchRound || DHCP_BATCH_MAX_ROUNDS}/${DHCP_BATCH_MAX_ROUNDS} 次，拿到公网 ${acquired} 条，剩余 ${dhcpLoopIds.length} 条${errors.length ? `，失败 ${errors.length} 条：${errors.slice(0, 2).map(x => x.error).join('；')}` : ''}`;
+    setLineStatus(msg, errors.length ? 'error' : 'running');
+    toast(msg, errors.length ? 'error' : 'success', 6000);
     dhcpLoopTimer = setTimeout(runDhcpLoopRound, DHCP_LOOP_INTERVAL_MS);
   } else {
-    toast(r.error || '请求 DHCP 失败', 'error');
+    const msg = errorText(r, '请求 DHCP 失败');
+    setLineStatus(msg, 'error');
+    toast(msg, 'error', 9000);
     dhcpLoopTimer = setTimeout(runDhcpLoopRound, DHCP_LOOP_INTERVAL_MS);
     updateBulkState();
   }
@@ -357,23 +498,40 @@ function exportPublicIps() {
 
 async function changeMac(id) {
   if (!confirm('确定更换这条线路的 MAC？公网 IP 可能会变化。')) return;
+  setLineStatus(`正在更换线路 ${id} MAC...`, 'running');
   const r = await api.post('/api/lines/' + id + '/change-mac');
-  if (r.ok) { toast('MAC 已更换，线路已更新', 'success'); loadLines(); }
-  else toast(r.error || '更换失败', 'error');
+  if (r.ok) {
+    const line = r.data.line || {};
+    const msg = `MAC 已更换：${r.data.mac || '-'}，公网 ${line.public_ip || '0.0.0.0'}`;
+    setLineStatus(msg, hasPublicIp(line) ? 'success' : 'info');
+    toast(msg, hasPublicIp(line) ? 'success' : 'info', 7000);
+    loadLines();
+  } else {
+    const msg = errorText(r, '更换失败');
+    setLineStatus(msg, 'error');
+    toast(msg, 'error', 9000);
+  }
 }
 
-async function syncLines() {
+async function syncLines(silent = false) {
   $('#btnSyncLines').prop('disabled', true);
+  if (!silent) setLineStatus('正在从真实网卡更新线路列表...', 'running');
   const r = await api.post('/api/lines/sync-local');
   $('#btnSyncLines').prop('disabled', false);
   if (r.ok) {
     const total = r.data.interface_count || r.data.detected_count || 0;
     const publicCount = r.data.public_count || r.data.detected_count || 0;
     const slots = r.data.slot_count || 0;
-    toast(`更新完成，真实接口 ${total} 个，公网 ${publicCount} 个，虚拟网卡 ${slots} 个，新增 ${r.data.created_count} 条`, 'success', 6500);
+    const msg = `更新完成，真实接口 ${total} 个，公网 ${publicCount} 个，虚拟网卡 ${slots} 个，新增 ${r.data.created_count} 条`;
+    if (!silent) {
+      setLineStatus(msg, 'success');
+      toast(msg, 'success', 6500);
+    }
     await loadLines();
   } else {
-    toast(r.error || '更新失败', 'error');
+    const msg = errorText(r, '更新失败');
+    setLineStatus(msg, 'error');
+    toast(msg, 'error', 9000);
   }
 }
 
@@ -381,7 +539,11 @@ function openAdapterModal() {
   if (lineCapabilities.can_create_virtual_adapters === false) {
     return toast(lineCapabilities.virtual_adapter_message || '当前环境不支持在面板内创建虚拟网卡', 'error', 6000);
   }
-  $('#adapterCount').val(13);
+  if (!adapterModal) {
+    setLineStatus('弹窗组件未加载，更新/选择/删除/DHCP 按钮仍可使用；请刷新页面后再创建网卡', 'error');
+    return toast('弹窗组件未加载，请刷新页面后再创建网卡', 'error', 6000);
+  }
+  $('#adapterCount').val(14);
   $('#adapterParent').val('');
   $('#adapterPrefix').val(24);
   adapterModal.show();
@@ -398,20 +560,23 @@ async function loadCapabilities() {
 }
 
 function openInternalIpModal() {
+  if (!internalIpModal) {
+    setLineStatus('弹窗组件未加载，请刷新页面后再配置内网 IP', 'error');
+    return toast('弹窗组件未加载，请刷新页面后再配置内网 IP', 'error', 6000);
+  }
   $('#internalBase').val('10.42');
   internalIpModal.show();
 }
 
 async function addAdapter() {
   const payload = {
-    count: Number($('#adapterCount').val() || 13),
+    count: Number($('#adapterCount').val() || 14),
     parent: $('#adapterParent').val(),
     prefix: Number($('#adapterPrefix').val() || 24),
   };
   const selectedParent = masterInterfaces.find(x => x.name === payload.parent);
   const targetText = selectedParent ? `主网卡 ${selectedParent.label || selectedParent.name}` : '所有主网卡';
-  payload.count = 13;
-  if (!confirm(`确定在${targetText}下面补齐 13 个固定虚拟 MAC 网卡吗？`)) return;
+  if (!confirm(`确定在${targetText}下面创建 ${payload.count} 个虚拟 MAC 网卡吗？`)) return;
   $('#btnSaveAdapter').prop('disabled', true);
   const r = await api.post('/api/lines/add-virtual-adapter', payload);
   $('#btnSaveAdapter').prop('disabled', false);
@@ -463,11 +628,7 @@ async function saveInternalIp() {
 }
 
 $(async () => {
-  adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
-  internalIpModal = new bootstrap.Modal(document.getElementById('internalIpModal'));
-  await loadCapabilities();
-  await loadLines();
-  $('#btnSyncLines').on('click', syncLines);
+  $('#btnSyncLines').on('click', () => syncLines(false));
   $('#btnExportPublicIps').on('click', exportPublicIps);
   $('#btnSelectNoPublicIp').on('click', selectNoPublicIpLines);
   $('#btnBatchRequestDhcp').on('click', batchRequestDhcp);
@@ -490,7 +651,21 @@ $(async () => {
   $('#btnEditInternalIp').on('click', openInternalIpModal);
   $('#btnSaveAdapter').on('click', addAdapter);
   $('#btnSaveInternalIp').on('click', saveInternalIp);
-  setInterval(loadLines, 30000);
+  if (window.bootstrap) {
+    adapterModal = new bootstrap.Modal(document.getElementById('adapterModal'));
+    internalIpModal = new bootstrap.Modal(document.getElementById('internalIpModal'));
+  }
+  try {
+    await loadCapabilities();
+    await loadLines();
+  } catch (e) {
+    console.error(e);
+    setLineStatus(`页面初始化失败：${e.message || e}`, 'error');
+    toast(`页面初始化失败：${e.message || e}`, 'error', 9000);
+  }
+  setInterval(() => {
+    loadLines().catch(e => console.error(e));
+  }, 30000);
 });
 </script>
 {% endblock %}

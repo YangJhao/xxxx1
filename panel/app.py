@@ -1,8 +1,10 @@
 """42IPwin web panel entrypoint."""
 import argparse
+import datetime as _dt
 import os
 import sys
 import threading
+import traceback
 import webbrowser
 from pathlib import Path
 
@@ -10,6 +12,7 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 from flask import Flask, redirect, render_template, request, session, url_for
+from werkzeug.exceptions import HTTPException
 
 from config import APP_VERSION, PANEL_PORT, PANEL_SECRET_KEY, get_panel_bind_ip, is_lite_mode
 from models import init_db
@@ -27,7 +30,7 @@ from routes.users import bp as users_bp
 from services import protection_manager, proxy_manager
 from services.traffic_collector import start_daemon as start_collector
 
-LITE_NAV_KEYS = {"dashboard", "nodes", "group_control", "logs", "settings", "admin_users"}
+LITE_NAV_KEYS = {"dashboard", "nodes", "group_control", "pve", "logs", "settings", "admin_users"}
 
 
 def create_app() -> Flask:
@@ -39,6 +42,21 @@ def create_app() -> Flask:
     app.secret_key = PANEL_SECRET_KEY
     app.config["SESSION_COOKIE_HTTPONLY"] = True
     app.config["JSON_AS_ASCII"] = False
+
+    @app.errorhandler(Exception)
+    def log_unhandled_exception(exc):
+        if isinstance(exc, HTTPException):
+            return exc
+        log_path = BASE_DIR.parent / "data" / "panel_runtime_error.log"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n[{_dt.datetime.now().isoformat(timespec='seconds')}] {request.method} {request.path}\n")
+                fh.write(f"admin_id={session.get('admin_id')} admin_name={session.get('admin_name')}\n")
+                fh.write(traceback.format_exc())
+        except Exception:
+            pass
+        return "Internal Server Error", 500
 
     @app.context_processor
     def inject_version():
@@ -101,6 +119,8 @@ def create_app() -> Flask:
 
     @app.route("/nodes")
     @app.route("/users")
+    @app.route("/inbounds")
+    @app.route("/inbound")
     @permission_required("nodes")
     def page_users():
         return render_template("users.html", admin=session.get("admin_name"), group_mode=False)
@@ -153,8 +173,7 @@ def main():
     args = parser.parse_args()
     lite_mode = args.lite or os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
     no_collector = args.no_collector or os.environ.get("IPWIN42_NO_COLLECTOR") == "1" or os.environ.get("42IPWIN_NO_COLLECTOR") == "1"
-    singbox_watchdog = os.environ.get("IPWIN42_SINGBOX_WATCHDOG", os.environ.get("42IPWIN_SINGBOX_WATCHDOG", "0")) == "1"
-    singbox_watchdog = singbox_watchdog or args.singbox_watchdog
+    singbox_watchdog = args.singbox_watchdog or os.environ.get("IPWIN42_PANEL_SINGBOX_WATCHDOG", "0") == "1"
 
     if args.init:
         init_db()
@@ -177,30 +196,6 @@ def main():
                     print(f"[sing-box watchdog] {exc}")
                 threading.Event().wait(10)
         threading.Thread(target=keep_singbox_alive, daemon=True).start()
-
-    def trim_singbox_connections():
-        while True:
-            try:
-                result = proxy_manager.enforce_connection_limits()
-                message = result.get("message") or ""
-                if "exceeded" in message or "trimmed" in message:
-                    print(f"[sing-box limiter] {message}")
-            except Exception as exc:
-                print(f"[sing-box limiter] {exc}")
-            threading.Event().wait(5)
-    threading.Thread(target=trim_singbox_connections, daemon=True).start()
-
-    def restore_auto_stopped_nodes():
-        while True:
-            try:
-                result = proxy_manager.restore_auto_stopped_users()
-                restored = result.get("restored") or []
-                if restored:
-                    print(f"[auto restore] restored nodes: {restored}")
-            except Exception as exc:
-                print(f"[auto restore] {exc}")
-            threading.Event().wait(10)
-    threading.Thread(target=restore_auto_stopped_nodes, daemon=True).start()
 
     def protect_runtime_resources():
         while True:

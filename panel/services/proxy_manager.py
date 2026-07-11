@@ -19,14 +19,51 @@ from services.cfg_generator import write_cfg
 from services.limit_manager import apply_limit, apply_limit_bps
 
 
+def _sing_box_mode() -> str:
+    mode = (os.environ.get("IPWIN42_SINGBOX_MODE") or "single").strip().lower()
+    return "per_line" if mode in {"per_line", "per-line", "line", "multi"} else "single"
+
+
+def _hybrid_per_line_ips() -> list[str]:
+    raw = (os.environ.get("IPWIN42_PER_LINE_IPS") or "").strip()
+    if not raw:
+        return []
+    return [item.strip() for item in raw.replace(";", ",").split(",") if item.strip()]
+
+
+def _line_ids_for_ips(session, ips: list[str]) -> list[int]:
+    if not ips:
+        return []
+    from models import Line
+
+    rows = session.query(Line).filter(Line.public_ip.in_(ips)).order_by(Line.id).all()
+    return [row.id for row in rows]
+
+
 HEALTH_URLS = (
     "http://127.0.0.1:9090/connections",
     "http://127.0.0.1:9090/configs",
 )
-MAX_CONNECTIONS_PER_PORT = int(os.environ.get("IPWIN42_MAX_PORT_CONNECTIONS", "150"))
+MAX_CONNECTIONS_PER_PORT = int(os.environ.get("IPWIN42_MAX_PORT_CONNECTIONS", "1000"))
+CONNECTION_LIMIT_CONFIRM_SAMPLES = int(os.environ.get("IPWIN42_CONNECTION_LIMIT_CONFIRM_SAMPLES", "3"))
 AUTO_STOP_RESTORE_SECONDS = int(os.environ.get("IPWIN42_AUTO_STOP_RESTORE_SECONDS", "120"))
 AUTO_PROTECT_THROTTLE_BPS = int(os.environ.get("IPWIN42_AUTO_PROTECT_THROTTLE_BPS", str(5 * 1000 * 1000)))
 AUTO_RESTORE_MARKER = "auto_restore_at="
+_over_limit_seen: dict[str, int] = {}
+
+
+def _write_operation_log(module: str, action: str, detail: str, ip: str = "127.0.0.1") -> None:
+    try:
+        from models import get_session
+
+        session = get_session()
+        try:
+            add_operation_log(session, "system", module, action, detail, ip)
+            session.commit()
+        finally:
+            session.close()
+    except Exception:
+        pass
 
 
 def _append_auto_restore_marker(note: str | None, restore_at: datetime) -> str:
@@ -141,11 +178,13 @@ def _find_running_process() -> int | None:
 
 
 def get_status() -> dict:
+    if _sing_box_mode() == "per_line":
+        return {"running": True, "pid": None, "engine": "sing-box", "mode": "per_line"}
     pid = _find_running_process() or _read_pid()
     running = _is_running(pid)
     if running and pid:
         _write_pid(pid)
-    return {"running": running, "pid": pid if running else None, "engine": "sing-box"}
+    return {"running": running, "pid": pid if running else None, "engine": "sing-box", "mode": "single"}
 
 
 def _read_exact(sock: socket.socket, size: int) -> bytes:
@@ -294,9 +333,28 @@ def _probe_connection_limits(timeout: float = 2.0) -> tuple[bool, str]:
             continue
         by_tag.setdefault(tag, []).append(conn)
 
-    over_limit = {tag: items for tag, items in by_tag.items() if len(items) > MAX_CONNECTIONS_PER_PORT}
-    if not over_limit:
+    raw_over_limit = {tag: items for tag, items in by_tag.items() if len(items) > MAX_CONNECTIONS_PER_PORT}
+    for tag in list(_over_limit_seen):
+        if tag not in raw_over_limit:
+            _over_limit_seen.pop(tag, None)
+
+    if not raw_over_limit:
         return True, f"connection limits ok: max {MAX_CONNECTIONS_PER_PORT}"
+
+    for tag in raw_over_limit:
+        _over_limit_seen[tag] = _over_limit_seen.get(tag, 0) + 1
+
+    over_limit = {
+        tag: items
+        for tag, items in raw_over_limit.items()
+        if _over_limit_seen.get(tag, 0) >= CONNECTION_LIMIT_CONFIRM_SAMPLES
+    }
+    if not over_limit:
+        details = ", ".join(
+            f"{tag}={len(items)} sample {_over_limit_seen.get(tag, 0)}/{CONNECTION_LIMIT_CONFIRM_SAMPLES}"
+            for tag, items in raw_over_limit.items()
+        )
+        return True, f"connection limit pending confirmation: {details}"
 
     paused, paused_details = _auto_pause_over_limit_users(over_limit)
     details = ", ".join(f"{tag}={len(items)}" for tag, items in over_limit.items())
@@ -306,8 +364,7 @@ def _probe_connection_limits(timeout: float = 2.0) -> tuple[bool, str]:
 
 
 def enforce_connection_limits(timeout: float = 2.0) -> dict:
-    ok, message = _probe_connection_limits(timeout=timeout)
-    return {"ok": ok, "message": message, "max_per_port": MAX_CONNECTIONS_PER_PORT}
+    return {"ok": True, "message": "connection limit disabled", "max_per_port": None}
 
 
 def restore_auto_stopped_users() -> dict:
@@ -362,6 +419,46 @@ def restore_auto_stopped_users() -> dict:
 
 
 def health_check(timeout: float = 2.0) -> dict:
+    if _sing_box_mode() == "per_line":
+        try:
+            from models import ProxyUser, Line, get_session
+            from services import instance_manager
+
+            session = get_session()
+            try:
+                line_ids = [
+                    int(line_id)
+                    for (line_id,) in (
+                        session.query(ProxyUser.line_id)
+                        .join(Line)
+                        .filter(ProxyUser.status == 1, Line.status == 1)
+                        .distinct()
+                        .all()
+                    )
+                ]
+                result = instance_manager.ensure_lines_running(session, line_ids, reason="per-line-health")
+            finally:
+                session.close()
+            first_pid = next((item.get("pid") for item in result.get("results") or [] if item.get("pid")), None)
+            failed = [item for item in result.get("results") or [] if not item.get("ok")]
+            return {
+                "running": bool(first_pid) or not line_ids,
+                "pid": first_pid,
+                "engine": "sing-box",
+                "mode": "per_line",
+                "healthy": not failed,
+                "message": f"per-line active={len(line_ids)} failed={len(failed)} restarted={result.get('restarted')}",
+                "result": result,
+            }
+        except Exception as exc:
+            return {
+                "running": False,
+                "pid": None,
+                "engine": "sing-box",
+                "mode": "per_line",
+                "healthy": False,
+                "message": f"per-line health failed: {exc}",
+            }
     status = get_status()
     if not status["running"]:
         return {**status, "healthy": False, "message": "sing-box process is not running"}
@@ -392,6 +489,23 @@ def health_check(timeout: float = 2.0) -> dict:
 
 
 def start():
+    if _sing_box_mode() == "per_line":
+        from models import get_session
+        from services import instance_manager
+
+        session = get_session()
+        try:
+            result = instance_manager.ensure_active_lines(session)
+            first_pid = next((item.get("pid") for item in result.get("results") or [] if item.get("pid")), 0)
+            if result.get("restarted"):
+                _write_operation_log(
+                    "sing-box-watchdog",
+                    "per-line-start",
+                    f"active_lines={len(result.get('line_ids') or [])}; first_pid={first_pid}; result={result}",
+                )
+            return int(first_pid or 0)
+        finally:
+            session.close()
     if not os.path.exists(SING_BOX_EXE):
         raise FileNotFoundError(f"sing-box 不存在: {SING_BOX_EXE}")
     running_pid = _find_running_process()
@@ -405,7 +519,11 @@ def start():
         "stderr": subprocess.DEVNULL,
     }
     if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        )
     else:
         kwargs["start_new_session"] = True
     proc = subprocess.Popen([SING_BOX_EXE, "run", "-c", SING_BOX_CFG], **kwargs)
@@ -418,22 +536,93 @@ def start():
 
 
 def ensure_running():
+    if _sing_box_mode() == "per_line":
+        before = health_check()
+        pid = int(before.get("pid") or 0)
+        if before.get("healthy") and pid:
+            return pid
+        started = start()
+        _write_operation_log(
+            "sing-box-watchdog",
+            "per-line-ensure",
+            f"before={before}; after_first_pid={started}",
+        )
+        return started
     running_pid = _find_running_process()
     if running_pid:
         _write_pid(running_pid)
+        hybrid_ips = _hybrid_per_line_ips()
+        if hybrid_ips:
+            try:
+                from models import get_session
+                from services import instance_manager
+
+                session = get_session()
+                try:
+                    line_ids = _line_ids_for_ips(session, hybrid_ips)
+                    if line_ids:
+                        result = instance_manager.reload_lines(session, line_ids, reason="ensure-hybrid-instances")
+                        if result.get("restarted"):
+                            _write_operation_log(
+                                "sing-box-watchdog",
+                                "hybrid-ensure-instances",
+                                f"global_pid={running_pid}; line_ids={line_ids}; result={result}",
+                            )
+                finally:
+                    session.close()
+            except Exception as exc:
+                _write_operation_log(
+                    "sing-box-watchdog",
+                    "hybrid-ensure-failed",
+                    f"global_pid={running_pid}; ips={hybrid_ips}; error={exc}",
+                )
         return running_pid
     return start()
 
 
 def ensure_healthy() -> int:
+    if _sing_box_mode() == "per_line":
+        health = health_check()
+        if health.get("healthy"):
+            return int(health.get("pid") or 0)
+        pid = start()
+        _write_operation_log(
+            "sing-box-watchdog",
+            "per-line-health-repair",
+            f"health={health}; after_first_pid={pid}",
+        )
+        return int(pid or 0)
     health = health_check()
     if health.get("healthy"):
         pid = health.get("pid")
         if pid:
             return int(pid)
     if health.get("running"):
-        print(f"[sing-box watchdog] unhealthy, restarting: {health.get('message')}")
-        return restart_config()
+        pid = health.get("pid")
+        message = health.get("message") or "unknown"
+        print(f"[sing-box watchdog] unhealthy, no restart: {message}")
+        try:
+            from models import get_session
+
+            session = get_session()
+            try:
+                add_operation_log(
+                    session,
+                    "system",
+                    "sing-box-watchdog",
+                    "health-failed-no-restart",
+                    f"pid={pid}; action=no_restart; reason={message}",
+                    "127.0.0.1",
+                )
+                session.commit()
+            finally:
+                session.close()
+        except Exception:
+            pass
+        if pid:
+            _write_pid(int(pid))
+            return int(pid)
+        return 0
     print(f"[sing-box watchdog] missing, starting: {health.get('message')}")
     return start()
 
@@ -460,7 +649,156 @@ def _hot_reload_config() -> bool:
     return False
 
 
+def _config_listener_ports() -> set[int]:
+    try:
+        with open(SING_BOX_CFG, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return set()
+    ports = set()
+    for inbound in payload.get("inbounds") or []:
+        try:
+            port = int(inbound.get("listen_port") or 0)
+        except Exception:
+            port = 0
+        if port > 0:
+            ports.add(port)
+    return ports
+
+
+def _sing_box_listener_ports() -> set[int]:
+    pid = _find_running_process()
+    if not pid:
+        return set()
+    if os.name != "nt":
+        proc = subprocess.run(["ss", "-Hltun"], capture_output=True, text=True, timeout=8)
+        ports = set()
+        for line in (proc.stdout or "").splitlines():
+            local = line.split()[4] if len(line.split()) >= 5 else ""
+            try:
+                ports.add(int(local.rsplit(":", 1)[1]))
+            except Exception:
+                pass
+        return ports
+
+    proc = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=10)
+    ports = set()
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP" or parts[3].upper() != "LISTENING":
+            continue
+        try:
+            listen_pid = int(parts[4])
+            port = int(parts[1].rsplit(":", 1)[1])
+        except Exception:
+            continue
+        if listen_pid == int(pid):
+            ports.add(port)
+    return ports
+
+
+def _listener_sync_status() -> dict:
+    config_ports = _config_listener_ports()
+    runtime_ports = _sing_box_listener_ports()
+    control_ports = {9090}
+    missing = sorted(config_ports - runtime_ports)
+    orphan = sorted((runtime_ports - config_ports) - control_ports)
+    return {
+        "ok": not missing and not orphan,
+        "config_count": len(config_ports),
+        "runtime_count": len(runtime_ports),
+        "missing": missing,
+        "orphan": orphan,
+    }
+
+
+def reload_config_with_listener_sync(session=None, reason: str = "inbound-change", line_ids=None) -> dict:
+    if _sing_box_mode() == "per_line":
+        from models import get_session
+        from services import instance_manager
+
+        own_session = session is None
+        if own_session:
+            session = get_session()
+        try:
+            return instance_manager.reload_lines(session, line_ids, reason=reason)
+        finally:
+            if own_session:
+                session.close()
+    hybrid_ips = _hybrid_per_line_ips()
+    hot = reload_config_no_restart(session)
+    sync = _listener_sync_status()
+    hybrid_result = {}
+    if hybrid_ips:
+        from models import get_session
+        from services import instance_manager
+
+        own_session = session is None
+        if own_session:
+            session = get_session()
+        try:
+            hybrid_ids = _line_ids_for_ips(session, hybrid_ips)
+            target_ids = hybrid_ids
+            if line_ids is not None:
+                requested = {int(item) for item in line_ids if str(item).isdigit()}
+                target_ids = [item for item in hybrid_ids if item in requested]
+            if target_ids:
+                hybrid_result = instance_manager.reload_lines(session, target_ids, reason=f"hybrid-{reason}")
+        finally:
+            if own_session:
+                session.close()
+    if hot.get("ok") and sync.get("ok"):
+        return {**hot, "listener_sync": sync, "hybrid": hybrid_result}
+
+    before = get_status()
+    before_pid = before.get("pid")
+    stop()
+    after_pid = start()
+    time.sleep(1.2)
+    after_sync = _listener_sync_status()
+    detail = (
+        f"reason={reason}; hot_ok={hot.get('ok')}; before_pid={before_pid}; after_pid={after_pid}; "
+        f"missing_before={sync.get('missing')[:20]}; orphan_before={sync.get('orphan')[:20]}; "
+        f"missing_after={after_sync.get('missing')[:20]}; orphan_after={after_sync.get('orphan')[:20]}"
+    )
+    _write_operation_log("sing-box-watchdog", "listener-sync-restart", detail)
+    if hybrid_ips:
+        from models import get_session
+        from services import instance_manager
+
+        session2 = get_session()
+        try:
+            hybrid_result = instance_manager.reload_lines(session2, _line_ids_for_ips(session2, hybrid_ips), reason=f"hybrid-after-global-restart-{reason}")
+        finally:
+            session2.close()
+    return {
+        "ok": bool(after_sync.get("ok")),
+        "restarted": True,
+        "pid": after_pid,
+        "message": (
+            "listener mismatch after hot reload; restarted sing-box"
+            if after_sync.get("ok")
+            else "listener mismatch remains after sing-box restart"
+        ),
+        "hot_reload": hot,
+        "listener_sync": after_sync,
+        "hybrid": hybrid_result,
+    }
+
+
 def stop():
+    if _sing_box_mode() == "per_line":
+        from models import Line, get_session
+        from services import instance_manager
+
+        session = get_session()
+        try:
+            ok = True
+            for (line_id,) in session.query(Line.id).order_by(Line.id).all():
+                ok = instance_manager.stop_line(line_id) and ok
+            return ok
+        finally:
+            session.close()
     if os.name != "nt":
         pids = set(_linux_sing_box_pids())
         pid_file_pid = _read_pid()
@@ -500,6 +838,18 @@ def stop():
 
 
 def reload_config_no_restart(session=None) -> dict:
+    if _sing_box_mode() == "per_line":
+        from models import get_session
+        from services import instance_manager
+
+        own_session = session is None
+        if own_session:
+            session = get_session()
+        try:
+            return instance_manager.reload_lines(session, None, reason="reload-no-restart")
+        finally:
+            if own_session:
+                session.close()
     write_cfg(session)
     status = get_status()
     if not status["running"]:
@@ -510,18 +860,89 @@ def reload_config_no_restart(session=None) -> dict:
 
 
 def reload_config():
-    write_cfg()
-    status = get_status()
-    if not status["running"]:
-        return start()
-    stop()
-    return start()
+    status = reload_config_no_restart()
+    try:
+        from models import get_session
+
+        session = get_session()
+        try:
+            add_operation_log(
+                session,
+                "system",
+                "sing-box-watchdog",
+                "reload-no-restart",
+                f"ok={status.get('ok')}; pid={status.get('pid')}; message={status.get('message')}",
+                "127.0.0.1",
+            )
+            session.commit()
+        finally:
+            session.close()
+    except Exception:
+        pass
+    return status
 
 
-def restart_config():
+def restart_config(allow_restart: bool = False, reason: str = "manual"):
+    if _sing_box_mode() == "per_line":
+        from models import get_session
+        from services import instance_manager
+
+        session = get_session()
+        try:
+            result = instance_manager.reload_lines(session, None, reason=reason)
+            first_pid = next((item.get("pid") for item in result.get("results") or [] if item.get("pid")), 0)
+            return int(first_pid or 0)
+        finally:
+            session.close()
     write_cfg()
+    before = get_status()
+    restart_allowed = allow_restart or os.environ.get("IPWIN42_ALLOW_SINGBOX_FORCE_RESTART", "0") == "1"
+    if not restart_allowed:
+        status = reload_config_no_restart()
+        try:
+            from models import get_session
+
+            session = get_session()
+            try:
+                add_operation_log(
+                    session,
+                    "system",
+                    "sing-box-watchdog",
+                    "force-restart-blocked",
+                    (
+                        f"before_pid={before.get('pid')}; action=no_restart; "
+                        f"reason={reason}; hot_reload_ok={status.get('ok')}; message={status.get('message')}"
+                    ),
+                    "127.0.0.1",
+                )
+                session.commit()
+            finally:
+                session.close()
+        except Exception:
+            pass
+        pid = status.get("pid") or before.get("pid")
+        return int(pid or 0)
     stop()
-    return start()
+    pid = start()
+    try:
+        from models import get_session
+
+        session = get_session()
+        try:
+            add_operation_log(
+                session,
+                "system",
+                "sing-box-watchdog",
+                "manual-force-restart",
+                f"before_pid={before.get('pid')}; after_pid={pid}; caller=restart_config; reason={reason}",
+                "127.0.0.1",
+            )
+            session.commit()
+        finally:
+            session.close()
+    except Exception:
+        pass
+    return pid
 
 
 def test_outbound_ip(public_ip: str) -> dict:

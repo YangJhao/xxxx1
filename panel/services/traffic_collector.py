@@ -15,9 +15,18 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from models import ProxyUser, TrafficLog, get_session
-from services import wireguard_manager
+try:
+    from services import wireguard_manager
+except ImportError:
+    class _NoWireGuardManager:
+        @staticmethod
+        def transfer_snapshot(session) -> dict:
+            return {}
+
+    wireguard_manager = _NoWireGuardManager()
 
 CLASH_CONNECTIONS_URL = "http://127.0.0.1:9090/connections"
+INSTANCE_CONTROLLER_BASE_PORT = int(os.environ.get("IPWIN42_SINGBOX_INSTANCE_CONTROLLER_BASE", "19090"))
 TRAFFIC_INPUT_CHAIN = "42IPWIN_TRAFFIC_IN"
 TRAFFIC_OUTPUT_CHAIN = "42IPWIN_TRAFFIC_OUT"
 _last_conn_totals: dict[str, tuple[int, int, int]] = {}
@@ -43,11 +52,60 @@ def _traffic_protocols(protocol: str | None) -> list[str]:
     return ["tcp"]
 
 
-def _fetch_connections(timeout: float = 3) -> list[dict]:
-    req = urllib.request.Request(CLASH_CONNECTIONS_URL, headers={"Accept": "application/json"})
+def _sing_box_mode() -> str:
+    mode = (os.environ.get("IPWIN42_SINGBOX_MODE") or "single").strip().lower()
+    return "per_line" if mode in {"per_line", "per-line", "line", "multi"} else "single"
+
+
+def _controller_port(line_id: int) -> int:
+    return INSTANCE_CONTROLLER_BASE_PORT + int(line_id)
+
+
+def _fetch_connections_url(url: str, timeout: float = 3) -> list[dict]:
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8", errors="ignore"))
     return data.get("connections") or []
+
+
+def _active_line_ids(session) -> list[int]:
+    from models import Line
+
+    return [
+        int(row[0])
+        for row in session.query(Line.id).filter(Line.status == 1).order_by(Line.id).all()
+        if row[0]
+    ]
+
+
+def _fetch_connections(timeout: float = 3, session=None) -> list[dict]:
+    if _sing_box_mode() != "per_line":
+        return _fetch_connections_url(CLASH_CONNECTIONS_URL, timeout=timeout)
+
+    own_session = session is None
+    if own_session:
+        session = get_session()
+    try:
+        connections: list[dict] = []
+        errors: list[str] = []
+        line_ids = _active_line_ids(session)
+        for line_id in line_ids:
+            url = f"http://127.0.0.1:{_controller_port(line_id)}/connections"
+            try:
+                rows = _fetch_connections_url(url, timeout=timeout)
+            except Exception as exc:
+                errors.append(f"line {line_id}: {exc}")
+                continue
+            for row in rows:
+                if isinstance(row, dict):
+                    row["_ipwin_line_id"] = line_id
+            connections.extend(rows)
+        if not connections and errors and len(errors) == len(line_ids):
+            raise RuntimeError("; ".join(errors[:5]))
+        return connections
+    finally:
+        if own_session:
+            session.close()
 
 
 def _run_iptables(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess:
@@ -228,17 +286,16 @@ def snapshot_connections_status() -> dict:
 
     session = get_session()
     try:
-      users = { _user_tag(u): u.id for u in session.query(ProxyUser).all() }
+        users = { _user_tag(u): u.id for u in session.query(ProxyUser).all() }
+        try:
+            connections = _fetch_connections(timeout=0.5, session=session)
+        except Exception as exc:
+            _last_snapshot_error = str(exc)
+            return {"ok": False, "stale": False, "error": _last_snapshot_error, "data": {}}
     finally:
-      session.close()
+        session.close()
 
     result: dict[int, dict] = {}
-    try:
-        connections = _fetch_connections(timeout=0.5)
-    except Exception as exc:
-        _last_snapshot_error = str(exc)
-        return {"ok": False, "stale": False, "error": _last_snapshot_error, "data": {}}
-
     for conn in connections:
         uid = users.get(_connection_tag(conn))
         if not uid:
@@ -346,12 +403,17 @@ def collect_once() -> dict:
 
 def collector_status() -> dict:
     try:
-        connections = _fetch_connections()
+        session = get_session()
+        try:
+            connections = _fetch_connections(session=session)
+        finally:
+            session.close()
         tags = [_connection_tag(conn) for conn in connections]
         matched = [tag for tag in tags if tag.startswith("in-")]
         port_counters = _port_counter_snapshot()
         return {
             "ok": True,
+            "mode": _sing_box_mode(),
             "active_connections": len(connections),
             "matched_inbound_tags": len(matched),
             "sample_tags": tags[:8],
@@ -359,7 +421,7 @@ def collector_status() -> dict:
             "cached_snapshot_users": len(_last_snapshot),
         }
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "cached_snapshot_users": len(_last_snapshot)}
+        return {"ok": False, "mode": _sing_box_mode(), "error": str(exc), "cached_snapshot_users": len(_last_snapshot)}
 
 
 def start_daemon(interval_sec: int = 10):

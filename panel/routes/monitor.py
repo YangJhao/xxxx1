@@ -18,6 +18,7 @@ from config import PANEL_CFG_FILE, PANEL_PORT, PROXY_LOG_DIR, PROJECT_DIR, SING_
 from models import AdminUser, DB_PATH, Line, ProxyUser, TrafficLog, get_session
 from routes.auth import login_required
 from services import proxy_manager
+from services.singbox_monitor import instance_status
 from services.system_info import (
     clear_cache as clear_sys_cache,
     get_all_proxy_connections,
@@ -253,12 +254,12 @@ def stop_proxy():
 def reload_proxy():
     try:
         data = request.get_json(silent=True) or {}
-        if data.get("no_restart") or data.get("hot_reload"):
-            status = proxy_manager.reload_config_no_restart()
-            return jsonify({"ok": bool(status.get("ok")), "data": status})
         force = bool(data.get("force"))
-        pid = proxy_manager.restart_config() if force else proxy_manager.reload_config()
-        return jsonify({"ok": True, "data": {"pid": pid, "restarted": force}})
+        if force:
+            pid = proxy_manager.restart_config()
+            return jsonify({"ok": True, "data": {"pid": pid, "restarted": True}})
+        status = proxy_manager.reload_config_no_restart()
+        return jsonify({"ok": bool(status.get("ok")), "data": status})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -376,9 +377,16 @@ def probe():
     disk_system = _disk_probe(system_root)
     disk_project = _disk_probe(project_disk_path)
     try:
-        connections = len(psutil.net_connections(kind="inet"))
+        conn_rows = psutil.net_connections(kind="inet")
+        connections = len(conn_rows)
+        established_connections = sum(1 for conn in conn_rows if str(conn.status).upper() == "ESTABLISHED")
+        listen_connections = sum(1 for conn in conn_rows if str(conn.status).upper() == "LISTEN")
+        time_wait_connections = sum(1 for conn in conn_rows if str(conn.status).upper() == "TIME_WAIT")
     except Exception:
         connections = 0
+        established_connections = 0
+        listen_connections = 0
+        time_wait_connections = 0
     cpu_percent = psutil.cpu_percent(interval=0.05)
 
     return jsonify({"ok": True, "data": {
@@ -389,6 +397,10 @@ def probe():
         "memory_total": mem.total,
         "memory_available": mem.available,
         "connections": connections,
+        "machine_connections_total": connections,
+        "machine_connections_established": established_connections,
+        "machine_connections_listen": listen_connections,
+        "machine_connections_time_wait": time_wait_connections,
         "net_rx_bps": rx_bps,
         "net_tx_bps": tx_bps,
         "net_bytes_recv": net.bytes_recv,
@@ -399,6 +411,15 @@ def probe():
         "disk_used": (disk_project or disk_system or {}).get("used", 0),
         "disk_total": (disk_project or disk_system or {}).get("total", 0),
     }})
+
+
+@bp.route("/singbox/instances", methods=["GET"])
+@login_required
+def singbox_instances():
+    try:
+        return jsonify({"ok": True, "data": instance_status()})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @bp.route("/stats/log", methods=["GET"])

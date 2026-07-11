@@ -34,9 +34,12 @@ window.api = {
 window.toast = function (msg, type = 'info', ms = 2500) {
   const c = document.getElementById('toast-container');
   if (!c) return;
+  const fullText = String(msg == null ? '' : msg);
+  const text = fullText.length > 180 ? `${fullText.slice(0, 180)}...` : fullText;
   const t = document.createElement('div');
   t.className = 'toast-msg ' + type;
-  t.textContent = msg;
+  t.textContent = text;
+  if (fullText.length > text.length) t.title = fullText;
   c.appendChild(t);
   setTimeout(() => {
     t.style.transition = 'opacity 0.3s';

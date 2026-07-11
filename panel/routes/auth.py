@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify, redirect, render_template, request, sessio
 
 from config import is_lite_mode
 from models import AdminUser, NodeCustomer, OperationLog, Plan, Project, ProxyUser, get_session
+from services.log_formatter import format_operation_log
 
 bp = Blueprint("auth", __name__)
 
@@ -48,7 +49,7 @@ def current_permissions() -> set[str]:
     else:
         keys = set(_split_permissions(permissions))
     if is_lite_mode():
-        keys -= {"lines", "customers", "pve"}
+        keys -= {"lines", "customers"}
     return keys
 
 
@@ -548,6 +549,6 @@ def operation_logs():
     s = get_session()
     try:
         rows = s.query(OperationLog).order_by(OperationLog.id.desc()).limit(300).all()
-        return jsonify({"ok": True, "data": [row.to_dict() for row in rows]})
+        return jsonify({"ok": True, "data": [format_operation_log(row.to_dict()) for row in rows]})
     finally:
         s.close()

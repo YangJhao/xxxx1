@@ -1,4 +1,7 @@
 """Proxy user management APIs."""
+import heapq
+import ipaddress
+import base64
 import os
 import re
 import secrets
@@ -17,14 +20,18 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import http.cookiejar
+import subprocess
+import tempfile
 
 import psutil
 from flask import Blueprint, Response, jsonify, request, session
+from sqlalchemy import func
 from sqlalchemy.orm import joinedload
 
 try:
-    from config import is_lite_mode
+    from config import SING_BOX_EXE, is_lite_mode
 except ImportError:
+    SING_BOX_EXE = ""
     def is_lite_mode() -> bool:
         return os.environ.get("IPWIN42_LITE") == "1" or os.environ.get("42IPWIN_LITE") == "1"
 from models import Line, ManagedServer, PROTOCOL_TYPES, ProxyUser, SS_METHODS, get_session
@@ -35,6 +42,7 @@ except ModuleNotFoundError:
     def add_operation_log(*args, **kwargs):
         return None
 from services import proxy_manager
+from services import inbound_instance_manager
 try:
     from services.proxy_manager import _pop_auto_restore_marker
 except ImportError:
@@ -80,6 +88,7 @@ USERNAME_RE = re.compile(r"^[A-Za-z0-9_\-]{3,48}$")
 TESTABLE_UDP_PROTOCOLS = {"socks5", "ss", "hysteria2"}
 RANDOM_PORT_MIN = 10000
 RANDOM_PORT_MAX = 60000
+WINDOWS_EXCLUDED_PORT_CACHE = {"time": 0.0, "ports": set()}
 DEFAULT_SPEED_LIMIT = "20m"
 DEFAULT_TRAFFIC_LIMIT = "130g"
 DEFAULT_LITE_LINE_NAME = "本机公网"
@@ -145,21 +154,35 @@ def _gen_password(n: int = 12) -> str:
 
 
 def _selected_lines(session, line_id):
+    def only_public(rows):
+        return [line for line in rows if _is_public_ip(line.public_ip or "")]
+
     if str(line_id).lower() == "all":
-        return (
-            session.query(Line)
-            .filter((Line.status == 1) | (Line.name.like("%主网卡%")))
-            .order_by(Line.id)
+        rows = session.query(Line).filter(Line.status == 1).order_by(Line.id).all()
+        return only_public(rows)
+    line = session.query(Line).get(int(line_id))
+    return [line] if line and _is_public_ip(line.public_ip or "") else []
+
+
+def _sort_lines_by_inbound_count(session, lines: list[Line]) -> list[Line]:
+    if not lines:
+        return []
+    counts = {
+        line_id: total
+        for line_id, total in (
+            session.query(ProxyUser.line_id, func.count(ProxyUser.id))
+            .filter(ProxyUser.line_id.in_([line.id for line in lines]))
+            .group_by(ProxyUser.line_id)
             .all()
         )
-    line = session.query(Line).get(int(line_id))
-    return [line] if line else []
+    }
+    return sorted(lines, key=lambda line: (int(counts.get(line.id, 0)), str(line.public_ip or ""), int(line.id or 0)))
 
 
 def _target_lines(session, line_id, count: int):
     lines = _selected_lines(session, line_id)
     if str(line_id).lower() == "all":
-        return lines
+        return _sort_lines_by_inbound_count(session, lines)
     return lines[:1]
 
 
@@ -176,7 +199,8 @@ def _target_lines_by_ids(session, line_ids) -> list[Line]:
         return []
     rows = session.query(Line).filter(Line.id.in_(ids)).order_by(Line.id).all()
     by_id = {row.id: row for row in rows}
-    return [by_id[item] for item in ids if item in by_id]
+    selected = [by_id[item] for item in ids if item in by_id and _is_public_ip(by_id[item].public_ip or "")]
+    return _sort_lines_by_inbound_count(session, selected)
 
 
 def _parse_int_ids(values) -> list[int]:
@@ -203,6 +227,20 @@ def _parse_remote_user_id(value: str) -> tuple[int, int] | None:
     if server_id <= 0 or user_id <= 0:
         return None
     return server_id, user_id
+
+
+def _remote_item_local_id(item: dict) -> int:
+    raw = item.get("local_id") or item.get("id")
+    remote_id = _parse_remote_user_id(str(raw))
+    if remote_id:
+        raw = remote_id[1]
+    try:
+        user_id = int(str(raw).strip())
+    except Exception as exc:
+        raise ValueError(f"invalid remote inbound id: {raw}") from exc
+    if user_id <= 0:
+        raise ValueError(f"invalid remote inbound id: {raw}")
+    return user_id
 
 
 def _remote_panel_post(server: ManagedServer, path: str, payload: dict, timeout: int = 45) -> dict:
@@ -270,6 +308,74 @@ def _remote_panel_get(server: ManagedServer, path: str, timeout: int = 6) -> dic
     except Exception as exc:
         raise RuntimeError(f"返回不是 JSON: {text[:200]}") from exc
 
+
+
+def _ssh_connect_managed_server(server: ManagedServer, timeout: int = 12):
+    try:
+        import paramiko
+    except Exception as exc:
+        raise RuntimeError(f"缺少 SSH 依赖 paramiko: {exc}") from exc
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        server.ip,
+        port=int(server.ssh_port or 22),
+        username=server.username or "root",
+        password=server.password or "",
+        timeout=timeout,
+        banner_timeout=timeout,
+        auth_timeout=timeout,
+        look_for_keys=False,
+        allow_agent=False,
+    )
+    return client
+
+
+def _ssh_run(ssh, command: str, timeout: int = 45) -> tuple[int, str, str]:
+    stdin, stdout, stderr = ssh.exec_command(command, timeout=timeout)
+    out = stdout.read().decode("utf-8", "replace")
+    err = stderr.read().decode("utf-8", "replace")
+    code = stdout.channel.recv_exit_status()
+    return code, out, err
+
+
+def _remote_panel_get_via_ssh(server: ManagedServer, path: str, timeout: int = 12) -> dict:
+    safe_path = json.dumps(path)
+    command = f"""python3 - <<'PY'
+import http.cookiejar
+import json
+import urllib.request
+
+base = 'http://127.0.0.1:18080'
+path = {safe_path}
+cj = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+def post(path, body):
+    raw = json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(base + path, data=raw, headers={{'Content-Type': 'application/json'}}, method='POST')
+    with opener.open(req, timeout={int(timeout)}) as resp:
+        return json.loads(resp.read().decode('utf-8', 'replace'))
+
+login = post('/api/login', {{'username': 'admin', 'password': 'admin123'}})
+if not login.get('ok'):
+    raise SystemExit('login failed: ' + (login.get('error') or 'unknown'))
+req = urllib.request.Request(base + path, method='GET')
+with opener.open(req, timeout={int(timeout)}) as resp:
+    print(resp.read().decode('utf-8', 'replace'))
+PY"""
+    ssh = _ssh_connect_managed_server(server, timeout=max(timeout, 12))
+    try:
+        code, out, err = _ssh_run(ssh, command, timeout=max(timeout + 20, 35))
+    finally:
+        ssh.close()
+    if code != 0:
+        raise RuntimeError((err or out or f"ssh panel get exit {code}")[-1200:])
+    try:
+        return json.loads(out.strip() or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"SSH 返回不是 JSON: {out[:200]}") from exc
 
 
 def _remote_panel_download(server: ManagedServer, path: str, timeout: int = 20) -> tuple[bytes, str]:
@@ -348,7 +454,10 @@ def _remote_users_from_managed_servers(session) -> list[dict]:
     local_ips = _local_server_ips()
     servers = (
         session.query(ManagedServer)
-        .filter(ManagedServer.install_status == "installed")
+        .filter(
+            ManagedServer.install_status == "installed",
+            (ManagedServer.silent_group.is_(None)) | (ManagedServer.silent_group == 0),
+        )
         .order_by(ManagedServer.id.desc())
         .all()
     )
@@ -357,7 +466,10 @@ def _remote_users_from_managed_servers(session) -> list[dict]:
     def fetch_server(server: ManagedServer) -> list[dict]:
         server_rows = []
         try:
-            result = _remote_panel_get(server, "/api/users", timeout=6)
+            try:
+                result = _remote_panel_get(server, "/api/users?local_only=1", timeout=6)
+            except Exception:
+                result = _remote_panel_get_via_ssh(server, "/api/users?local_only=1", timeout=12)
             for item in result.get("data") or []:
                 item = dict(item)
                 item["local_id"] = item.get("id")
@@ -384,24 +496,192 @@ def _remote_users_from_managed_servers(session) -> list[dict]:
             rows.extend(future.result())
     return rows
 
+
+def _dedupe_user_rows(rows: list[dict]) -> list[dict]:
+    deduped = []
+    seen = set()
+    for item in rows:
+        key = (
+            str(item.get("line_ip") or item.get("managed_server_ip") or "").strip(),
+            str(item.get("listen_port") or "").strip(),
+            str(item.get("protocol") or "").strip().lower(),
+        )
+        if key[0] and key[1] and key[2]:
+            if key in seen:
+                continue
+            seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _server_ip_sort_key(server: ManagedServer):
+    try:
+        return (0, int(ipaddress.ip_address(str(server.ip or "").strip())))
+    except Exception:
+        return (1, str(server.ip or ""))
+
+
+def _managed_server_inbound_count(server: ManagedServer) -> int:
+    try:
+        result = _remote_panel_get(server, "/api/users?local_only=1", timeout=8)
+        return len(result.get("data") or [])
+    except Exception:
+        return 10**9
+
+
+def _least_inbound_targets(servers: list[ManagedServer], count: int) -> list[ManagedServer]:
+    heap = []
+    unique_servers = []
+    seen_ids = set()
+    for server in servers:
+        if server.id in seen_ids:
+            continue
+        seen_ids.add(server.id)
+        unique_servers.append(server)
+        if server.install_status != "installed":
+            continue
+        inbound_count = _managed_server_inbound_count(server)
+        heapq.heappush(heap, (inbound_count, _server_ip_sort_key(server), server.id, server))
+    if not heap:
+        heap = [(0, _server_ip_sort_key(server), server.id, server) for server in unique_servers]
+        heapq.heapify(heap)
+
+    targets = []
+    for _ in range(max(0, count)):
+        if not heap:
+            break
+        inbound_count, sort_key, server_id, server = heapq.heappop(heap)
+        targets.append(server)
+        heapq.heappush(heap, (inbound_count + 1, sort_key, server_id, server))
+    return targets
+
+
+def _least_inbound_unique_targets(servers: list[ManagedServer], count: int) -> list[ManagedServer]:
+    targets = _least_inbound_targets(servers, count)
+    deduped = []
+    seen_ids = set()
+    for server in targets:
+        if server.id in seen_ids:
+            continue
+        seen_ids.add(server.id)
+        deduped.append(server)
+    return deduped
+
+
+def _verify_remote_created_item(item: dict, timeout: int = 12) -> tuple[bool, str]:
+    protocol = (item.get("protocol") or "").strip().lower()
+    if protocol != "ss":
+        return True, "not verified for this protocol"
+    if not SING_BOX_EXE or not os.path.exists(SING_BOX_EXE):
+        return True, "sing-box client not available on center"
+    host = (item.get("managed_server_ip") or item.get("line_ip") or "").strip()
+    try:
+        port = int(item.get("listen_port") or item.get("port") or 0)
+    except Exception:
+        port = 0
+    method = (item.get("ss_method") or "aes-256-gcm").strip()
+    password = (item.get("ss_password") or item.get("password") or "").strip()
+    if not host or not port or not password:
+        return False, "missing ss connection fields"
+    socks_port = 31000 + secrets.randbelow(20000)
+    cfg = {
+        "log": {"level": "warn"},
+        "inbounds": [{"type": "socks", "tag": "socks", "listen": "127.0.0.1", "listen_port": socks_port}],
+        "outbounds": [{"type": "shadowsocks", "tag": "ss", "server": host, "server_port": port, "method": method, "password": password}],
+        "route": {"rules": [{"inbound": ["socks"], "outbound": "ss"}]},
+    }
+    cfg_path = None
+    proc = None
+    try:
+        fd, cfg_path = tempfile.mkstemp(prefix="42ipwin-ss-verify-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh)
+        proc = subprocess.Popen([SING_BOX_EXE, "run", "-c", cfg_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.8)
+        if proc.poll() is not None:
+            return False, "verify client exited"
+        errors = []
+        verify_urls = (
+            "http://api.ipify.org",
+            "http://ifconfig.me/ip",
+            "https://api.ipify.org",
+            "https://ifconfig.me/ip",
+        )
+        for url in verify_urls:
+            curl = subprocess.run(
+                [
+                    "curl",
+                    "-sS",
+                    "--socks5-hostname",
+                    f"127.0.0.1:{socks_port}",
+                    "--max-time",
+                    str(max(3, int(timeout))),
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=max(5, int(timeout) + 3),
+            )
+            body = (curl.stdout or "").strip()
+            if curl.returncode == 0 and body:
+                return True, f"verified outbound {body} via {url}"
+            errors.append(f"{url}: {(curl.stderr or curl.stdout or f'curl exit {curl.returncode}')[-160:]}")
+        return False, " | ".join(errors)[-400:] or "empty verify response"
+    except Exception as exc:
+        return False, str(exc)[-300:]
+    finally:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        if cfg_path:
+            try:
+                os.unlink(cfg_path)
+            except Exception:
+                pass
+
+
 def _create_on_managed_servers(session, server_ids: list[int], data: dict, count: int) -> dict | None:
-    ids = _parse_int_ids(server_ids)
+    ids = []
+    seen_ids = set()
+    for item in _parse_int_ids(server_ids):
+        if item in seen_ids:
+            continue
+        seen_ids.add(item)
+        ids.append(item)
     if not ids:
         return None
-    rows = session.query(ManagedServer).filter(ManagedServer.id.in_(ids)).order_by(ManagedServer.id).all()
+    rows = (
+        session.query(ManagedServer)
+        .filter(ManagedServer.id.in_(ids), (ManagedServer.silent_group.is_(None)) | (ManagedServer.silent_group == 0))
+        .order_by(ManagedServer.id)
+        .all()
+    )
     by_id = {row.id: row for row in rows}
     servers = [by_id[item] for item in ids if item in by_id]
     if not servers:
         raise ValueError("请选择有效服务器")
 
-    targets = []
-    while len(targets) < count:
-        targets.extend(servers)
-    targets = targets[:count]
-
     created = []
     errors = []
     skipped = []
+    base_custom_port = None
+    if data.get("custom_port") not in (None, "", 0, "0"):
+        try:
+            base_custom_port = int(data.get("custom_port"))
+        except Exception:
+            base_custom_port = None
+    if base_custom_port is not None:
+        targets = _least_inbound_unique_targets(servers, count)
+        if len(targets) < max(0, int(count or 0)):
+            skipped.append(f"固定端口批量创建时每台服务器只创建 1 个，已按可用服务器数创建 {len(targets)} 个")
+    else:
+        targets = _least_inbound_targets(servers, count)
 
     def create_remote(index_server):
         index, server = index_server
@@ -410,6 +690,10 @@ def _create_on_managed_servers(session, server_ids: list[int], data: dict, count
         payload["line_id"] = "lite"
         payload["line_ids"] = []
         payload["count"] = 1
+        payload["public_ip"] = server.ip
+        if base_custom_port is not None:
+            payload["custom_port"] = base_custom_port
+            payload["listen_port"] = base_custom_port
         try:
             result = _remote_panel_post(server, "/api/users", payload)
             result_data = result.get("data") or {}
@@ -421,6 +705,17 @@ def _create_on_managed_servers(session, server_ids: list[int], data: dict, count
                 item["id"] = f"remote:{server.id}:{item.get('id')}"
                 item["managed_server_id"] = server.id
                 item["managed_server_ip"] = server.ip
+                ok, verify_message = _verify_remote_created_item(item)
+                item["verify_ok"] = ok
+                item["verify_message"] = verify_message
+                if False and not ok:
+                    return [], f"{server.ip}: 创建后出网验证失败：{verify_message}"
+                if not ok:
+                    try:
+                        _remote_panel_delete(server, f"/api/users/{_remote_item_local_id(item)}")
+                    except Exception:
+                        pass
+                    return [], f"{server.ip}: 创建后出网验证失败，已回滚本次创建：{verify_message}"
                 server_created.append(item)
             return server_created, None
         except Exception as exc:
@@ -433,6 +728,24 @@ def _create_on_managed_servers(session, server_ids: list[int], data: dict, count
             created.extend(server_created)
             if error:
                 errors.append(error)
+    if created:
+        for item in created:
+            server_id = item.get("managed_server_id")
+            row = by_id.get(server_id)
+            if not row:
+                continue
+            row.inbound_count_cache = int(row.inbound_count_cache or 0) + 1
+            existing = [x for x in (row.inbound_assignments_cache or "").splitlines() if x]
+            owner = (item.get("owner_name") or item.get("username") or "-").strip()
+            project = (item.get("project_name") or "-").strip()
+            label = f"{owner}|{project}"
+            if label not in existing:
+                existing.append(label)
+            row.inbound_assignments_cache = "\n".join(existing[:1000])
+            row.status = "online"
+            row.install_status = "installed"
+            row.last_error = f"创建成功，入站缓存已更新：{row.inbound_count_cache}"
+            row.updated_at = datetime.utcnow()
 
     return {
         "created": created,
@@ -491,6 +804,8 @@ def _port_available_on_host(port: int) -> bool:
         port = int(port)
     except Exception:
         return False
+    if _is_windows_excluded_port(port):
+        return False
     for family, sock_type in ((socket.AF_INET, socket.SOCK_STREAM), (socket.AF_INET, socket.SOCK_DGRAM)):
         sock = socket.socket(family, sock_type)
         try:
@@ -500,6 +815,44 @@ def _port_available_on_host(port: int) -> bool:
         finally:
             sock.close()
     return True
+
+
+def _windows_excluded_ports() -> set[int]:
+    if os.name != "nt":
+        return set()
+    now = time.time()
+    cached = WINDOWS_EXCLUDED_PORT_CACHE
+    if cached["ports"] and now - cached["time"] < 300:
+        return set(cached["ports"])
+    ports: set[int] = set()
+    for protocol in ("tcp", "udp"):
+        try:
+            proc = subprocess.run(
+                ["netsh", "interface", "ipv4", "show", "excludedportrange", f"protocol={protocol}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except Exception:
+            continue
+        for line in (proc.stdout or "").splitlines():
+            numbers = re.findall(r"\d+", line)
+            if len(numbers) < 2:
+                continue
+            start, end = int(numbers[0]), int(numbers[1])
+            if 0 < start <= end <= 65535:
+                ports.update(range(start, end + 1))
+    cached["time"] = now
+    cached["ports"] = ports
+    return set(ports)
+
+
+def _is_windows_excluded_port(port: int) -> bool:
+    try:
+        port = int(port)
+    except Exception:
+        return True
+    return port in _windows_excluded_ports()
 
 
 def _random_available_port(session, used_ports: set[int] | None = None) -> int:
@@ -547,8 +900,9 @@ def _detect_public_ip() -> str:
     return ""
 
 
-def _ensure_lite_line(session) -> Line:
-    public_ip = _detect_public_ip()
+def _ensure_lite_line(session, preferred_public_ip: str = "") -> Line:
+    preferred_public_ip = (preferred_public_ip or "").strip()
+    public_ip = preferred_public_ip if _is_public_ip(preferred_public_ip) else _detect_public_ip()
     if not public_ip:
         raise ValueError("无法自动获取本机公网 IP，请设置环境变量 IPWIN42_PUBLIC_IP")
     line = session.query(Line).filter(Line.public_ip == public_ip).first()
@@ -671,23 +1025,98 @@ def _normalize_traffic_limit(value: str | None, default: str | None = None) -> s
     return text
 
 
-def _reload_proxy(session=None):
-    hot = proxy_manager.reload_config_no_restart(session)
-    if hot.get("ok"):
-        return hot
-    pid = proxy_manager.restart_config()
-    return {
-        "ok": True,
-        "restarted": True,
-        "pid": pid,
-        "message": f"hot reload failed; restarted sing-box: {hot.get('message') or 'unknown'}",
-    }
+def _reload_proxy(session=None, line_ids=None):
+    return proxy_manager.reload_config_with_listener_sync(session, reason="user-inbound-change", line_ids=line_ids)
+
+
+def _is_inbound_instance(user: ProxyUser | None) -> bool:
+    return inbound_instance_manager.is_instance_user(user)
+
+
+def _apply_runtime_after_create(session, users: list[ProxyUser]) -> dict:
+    instance_users = [user for user in users if _is_inbound_instance(user)]
+    legacy_users = [user for user in users if not _is_inbound_instance(user)]
+    result = {"ok": True, "instance": [], "legacy": {}}
+    if legacy_users:
+        _reload_proxy(session, [user.line_id for user in legacy_users])
+        result["legacy"] = _ensure_created_applied(legacy_users)
+        result["ok"] = bool(result["legacy"].get("applied", result["legacy"].get("ok", True)))
+    for user in instance_users:
+        item = inbound_instance_manager.start_user(user)
+        item["user_id"] = user.id
+        result["instance"].append(item)
+        if not item.get("ok"):
+            result["ok"] = False
+    result["applied"] = result["ok"]
+    result["restarted"] = any(item.get("restarted") for item in result["instance"]) or bool(result["legacy"].get("restarted"))
+    return result
+
+
+def _apply_runtime_after_delete(session, users: list[ProxyUser], affected_line_ids: list[int]) -> dict:
+    instance_users = [user for user in users if _is_inbound_instance(user)]
+    legacy_line_ids = [line_id for user, line_id in zip(users, affected_line_ids) if not _is_inbound_instance(user)]
+    result = {"ok": True, "instance": [], "legacy": {}}
+    for user in instance_users:
+        item = inbound_instance_manager.remove_user(user)
+        item["user_id"] = user.id
+        result["instance"].append(item)
+        if not item.get("ok"):
+            result["ok"] = False
+    if legacy_line_ids:
+        result["legacy"] = _reload_proxy(session, legacy_line_ids)
+        result["ok"] = result["ok"] and bool(result["legacy"].get("ok", True))
+    return result
+
+
+def _apply_runtime_for_user(session, user: ProxyUser, affected_line_ids: list[int] | None = None) -> dict:
+    if _is_inbound_instance(user):
+        return inbound_instance_manager.apply_user(user)
+    return _reload_proxy(session, affected_line_ids or [user.line_id])
 
 
 def _parse_inbound_field(text: str) -> dict:
     raw = str(text or "").strip()
     if not raw:
         raise ValueError("请输入原完整入站")
+    if raw.lower().startswith("vmess://"):
+        parts = raw.split("|")
+        link_part = parts[0]
+        suffix_parts = [part.strip() for part in parts[1:] if part.strip()]
+        payload = link_part[8:].split("#", 1)[0].split("?", 1)[0].strip()
+        payload += "=" * (-len(payload) % 4)
+        try:
+            vm = json.loads(base64.urlsafe_b64decode(payload.encode()).decode("utf-8", "replace"))
+        except Exception as exc:
+            raise ValueError("VMess 链接解析失败") from exc
+        ip = str(vm.get("add") or vm.get("host") or "").strip()
+        if suffix_parts:
+            try:
+                socket.inet_aton(suffix_parts[0])
+                ip = suffix_parts[0]
+            except Exception:
+                pass
+        try:
+            port = int(suffix_parts[1] if len(suffix_parts) >= 2 and suffix_parts[1].isdigit() else (vm.get("port") or 0))
+        except Exception as exc:
+            raise ValueError("VMess 端口格式错误") from exc
+        password = str(vm.get("id") or "").strip()
+        if not ip or not port or not password:
+            raise ValueError("VMess 链接缺少 IP、端口或 UUID")
+        username = str(vm.get("ps") or "").strip() or "vmess"
+        expire_candidate = next((part for part in reversed(suffix_parts) if _parse_expire(part)), "")
+        expire = expire_candidate or (username if _parse_expire(username) else "")
+        return {
+            "raw": raw,
+            "ip": ip,
+            "port": port,
+            "protocol": "vmess",
+            "username": username,
+            "password": password,
+            "ss_method": None,
+            "ss_password": None,
+            "expire_at": expire,
+            "vmess_payload": vm,
+        }
     parts = [part.strip() for part in raw.split("|")]
     if len(parts) < 4:
         raise ValueError("入站格式错误，至少需要 IP|端口|账号/方法|密码")
@@ -735,6 +1164,8 @@ def _user_matches_inbound(user: ProxyUser, spec: dict) -> bool:
         return False
     if spec.get("protocol") == "ss":
         return (user.ss_method or "aes-256-gcm") == spec.get("ss_method") and (user.ss_password or user.password or "") == spec.get("ss_password")
+    if spec.get("protocol") == "vmess":
+        return (user.password or "") == spec.get("password")
     return (user.username or "") == spec.get("username") and (user.password or "") == spec.get("password")
 
 
@@ -759,6 +1190,9 @@ def _find_remote_inbound(session, spec: dict) -> tuple[ManagedServer | None, dic
                     continue
                 if (item.get("ss_password") or item.get("password") or "") != spec["ss_password"]:
                     continue
+            elif spec["protocol"] == "vmess":
+                if (item.get("password") or "") != spec["password"]:
+                    continue
             else:
                 if (item.get("username") or "") != spec["username"] or (item.get("password") or "") != spec["password"]:
                     continue
@@ -770,6 +1204,14 @@ def _change_ip_output(spec: dict, new_ip: str) -> str:
     expire = spec.get("expire_at") or ""
     if spec["protocol"] == "ss":
         return f"{new_ip}|{spec['port']}|{spec['ss_method']}|{spec['ss_password']}|{expire}".rstrip("|")
+    if spec["protocol"] == "vmess":
+        vm = dict(spec.get("vmess_payload") or {})
+        vm["add"] = new_ip
+        vm["port"] = str(spec["port"])
+        vm["id"] = spec["password"]
+        raw = json.dumps(vm, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        link = "vmess://" + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        return f"{link}|{new_ip}|{spec['port']}|{expire}".rstrip("|")
     return f"{new_ip}|{spec['port']}|{spec['username']}|{spec['password']}|{expire}".rstrip("|")
 
 
@@ -796,7 +1238,11 @@ def _remote_has_assignment(server: ManagedServer, owner_name: str, project_name:
 
 
 def _select_change_ip_target(session, old_ip: str, requested_ip: str, owner_name: str, project_name: str) -> ManagedServer | None:
-    q = session.query(ManagedServer).filter(ManagedServer.install_status == "installed", ManagedServer.ip != old_ip)
+    q = session.query(ManagedServer).filter(
+        ManagedServer.install_status == "installed",
+        (ManagedServer.silent_group.is_(None)) | (ManagedServer.silent_group == 0),
+        ManagedServer.ip != old_ip,
+    )
     if requested_ip:
         q = q.filter(ManagedServer.ip == requested_ip)
     servers = q.order_by(ManagedServer.id).all()
@@ -1025,28 +1471,13 @@ def _ensure_created_applied(users: list[ProxyUser]) -> dict:
     if status["applied"]:
         return status
     missing_before = list(status.get("missing_ports") or [])
-    try:
-        pid = proxy_manager.restart_config()
-        time.sleep(1.2)
-        status = _created_apply_status(users)
-        status["restarted"] = True
-        status["pid"] = pid
-        if status["applied"]:
-            status["message"] = (
-                "hot reload did not expose every listener; restarted sing-box and verified ports: "
-                + ", ".join(map(str, missing_before[:8]))
-            )
-        else:
-            status["message"] = (
-                "ports still not listening after sing-box restart: "
-                + ", ".join(map(str, (status.get("missing_ports") or [])[:8]))
-            )
-        return status
-    except Exception as exc:
-        status["applied"] = False
-        status["restarted"] = False
-        status["message"] = f"restart failed after listener check: {exc}"
-        return status
+    status["applied"] = False
+    status["restarted"] = False
+    status["message"] = (
+        "hot reload did not expose every listener; sing-box was not restarted automatically: "
+        + ", ".join(map(str, missing_before[:8]))
+    )
+    return status
 
 
 def _interface_for_line(line: Line) -> str | None:
@@ -1323,7 +1754,7 @@ def _create_user_v3():
             lines = _target_lines(s, line_id, count)
         elif is_lite_mode() or line_key == "lite":
             lite_create = True
-            lite_line = _ensure_lite_line(s)
+            lite_line = _ensure_lite_line(s, data.get("public_ip") or data.get("line_ip") or data.get("managed_server_ip") or "")
             lines = [lite_line for _ in range(local_count or count)]
         else:
             lines = _target_lines(s, line_id, count)
@@ -1336,6 +1767,8 @@ def _create_user_v3():
             forced_port = int(custom_port)
             if not (1024 < forced_port < 65536):
                 return jsonify({"ok": False, "error": "端口范围错误"}), 400
+            if _is_windows_excluded_port(forced_port):
+                return jsonify({"ok": False, "error": f"端口 {forced_port} 被 Windows 系统保留，请换一个端口"}), 400
             if not _port_available_on_host(forced_port):
                 return jsonify({"ok": False, "error": f"端口 {forced_port} 已被系统进程占用"}), 400
             if str(line_id).lower() != "all":
@@ -1401,6 +1834,7 @@ def _create_user_v3():
                 project_name=project_name or None,
                 speed_limit=speed_limit or None,
                 traffic_limit=traffic_limit or None,
+                runtime_mode="inbound_instance" if protocol != "wireguard" else None,
                 expire_at=expire_at,
                 note=note,
             )
@@ -1437,8 +1871,7 @@ def _create_user_v3():
             if protocol == "wireguard":
                 apply_status = wireguard_manager.reload_service(s)
             else:
-                _reload_proxy(s)
-                apply_status = _ensure_created_applied(created)
+                apply_status = _apply_runtime_after_create(s, created)
         except Exception as exc:
             created_ids = [user.id for user in created]
             for user in created:
@@ -1451,7 +1884,7 @@ def _create_user_v3():
                     pass
             else:
                 try:
-                    _reload_proxy(s)
+                    _apply_runtime_after_delete(s, created, [user.line_id for user in created])
                 except Exception:
                     pass
             detail = str(exc)
@@ -1513,14 +1946,21 @@ def _limit_info_for_user(user: ProxyUser, measured_mbps=None) -> dict:
 def list_users():
     s = get_session()
     try:
-        try:
-            collect_once()
-        except Exception:
-            pass
-        connection_status = snapshot_connections_status()
+        local_only = str(request.args.get("local_only") or "").lower() in {"1", "true", "yes"}
+        include_remote = str(request.args.get("include_remote") or "").lower() in {"1", "true", "yes"}
+        refresh_stats = str(request.args.get("refresh_stats") or "").lower() in {"1", "true", "yes"}
+        if refresh_stats:
+            try:
+                collect_once()
+            except Exception:
+                pass
+        if refresh_stats:
+            connection_status = snapshot_connections_status()
+        else:
+            connection_status = {"ok": False, "data": {}, "port_counter_users": set(), "error": "fast list mode"}
         connection_snapshot = connection_status.get("data") or {}
         port_counter_users = connection_status.get("port_counter_users") or set()
-        wg_totals = wireguard_manager.transfer_snapshot(s)
+        wg_totals = wireguard_manager.transfer_snapshot(s) if refresh_stats else {}
         expired = _apply_expire_limits(s)
         traffic_disabled = _apply_traffic_limits(s)
         if expired or traffic_disabled:
@@ -1553,8 +1993,9 @@ def list_users():
                 item["traffic_available"] = True
                 item["traffic_source"] = "WireGuard 实时统计"
             rows.append(item)
-        if is_lite_mode():
+        if include_remote and not local_only:
             rows.extend(_remote_users_from_managed_servers(s))
+            rows = _dedupe_user_rows(rows)
         return jsonify({"ok": True, "data": rows})
     finally:
         s.close()
@@ -1591,10 +2032,11 @@ def clean_expired():
         users = s.query(ProxyUser).filter(ProxyUser.expire_at.isnot(None), ProxyUser.expire_at < now).all()
         count = len(users)
         limit_ids = [user.id for user in users]
+        affected_line_ids = [user.line_id for user in users]
         for user in users:
             s.delete(user)
         s.commit()
-        _reload_proxy(s)
+        _reload_proxy(s, affected_line_ids)
         _clear_user_limits_background(limit_ids)
         return jsonify({"ok": True, "data": {"deleted": count, "limit_clear_queued": len(limit_ids)}})
     finally:
@@ -1623,13 +2065,13 @@ def batch_delete():
         users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all() if ids else []
         count = len(users)
         limit_ids = [user.id for user in users]
+        affected_line_ids = [user.line_id for user in users]
         local_log_details = [_format_log_user_detail(user) for user in users]
+        apply_status = _apply_runtime_after_delete(s, users, affected_line_ids) if users else {}
         for user in users:
             s.delete(user)
         s.commit()
-        apply_status = {}
         if users:
-            apply_status = _reload_proxy(s)
             _clear_user_limits_background(limit_ids)
 
         errors = []
@@ -1689,15 +2131,28 @@ def batch_stop():
     try:
         users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all()
         changed = []
+        affected_line_ids = []
+        apply_status = {"ok": True, "instance": [], "legacy": {}}
         for user in users:
             if user.status:
                 user.status = 0
                 changed.append(user.id)
+                affected_line_ids.append(user.line_id)
         s.commit()
         if changed:
             _clear_user_limits_background(changed)
-            _reload_proxy(s)
-        return jsonify({"ok": True, "data": {"updated": len(changed), "matched": len(users), "limit_clear_queued": len(changed)}})
+            changed_users = [user for user in users if user.id in changed]
+            instance_users = [user for user in changed_users if _is_inbound_instance(user)]
+            legacy_line_ids = [user.line_id for user in changed_users if not _is_inbound_instance(user)]
+            for user in instance_users:
+                item = inbound_instance_manager.stop_user(user)
+                item["user_id"] = user.id
+                apply_status["instance"].append(item)
+                if not item.get("ok"):
+                    apply_status["ok"] = False
+            if legacy_line_ids:
+                apply_status["legacy"] = _reload_proxy(s, legacy_line_ids)
+        return jsonify({"ok": True, "data": {"updated": len(changed), "matched": len(users), "limit_clear_queued": len(changed), "apply_status": apply_status}})
     finally:
         s.close()
 
@@ -1794,6 +2249,7 @@ def batch_edit_limits():
             found_ids = {user.id for user in users}
             missing_ids = [uid for uid in ids if uid not in found_ids]
             return jsonify({"ok": False, "error": f"部分节点不存在: {missing_ids[:10]}"}), 400
+        affected_line_ids = [user.line_id for user in users]
         limit_ids = []
         clear_ids = []
         for user in users:
@@ -1807,7 +2263,7 @@ def batch_edit_limits():
             if user.status and parse_speed_to_bps(user.speed_limit):
                 limit_ids.append(user.id)
         s.commit()
-        _reload_proxy(s)
+        _reload_proxy(s, affected_line_ids)
         _clear_user_limits_background(clear_ids)
         _apply_user_limits_background(limit_ids)
         return jsonify({"ok": True, "data": {"updated": len(users), "updated_ids": ids, "limit_queued": len(limit_ids)}})
@@ -1819,19 +2275,30 @@ def batch_edit_limits():
 @login_required
 def batch_renew():
     data = request.get_json(silent=True) or {}
-    ids = [int(x) for x in (data.get("ids") or []) if str(x).isdigit()]
+    ids = []
+    remote_ids = []
+    for value in data.get("ids") or []:
+        remote_id = _parse_remote_user_id(value)
+        if remote_id and remote_id not in remote_ids:
+            remote_ids.append(remote_id)
+            continue
+        if str(value).isdigit():
+            uid = int(value)
+            if uid not in ids:
+                ids.append(uid)
     try:
         days = max(1, int(data.get("days") or 0))
     except Exception:
         days = 0
     expire_at = _parse_expire(data.get("expire_at") or "")
-    if not ids:
+    if not ids and not remote_ids:
         return jsonify({"ok": False, "error": "请选择节点"}), 400
     if not days and not expire_at:
         return jsonify({"ok": False, "error": "请输入有效到期时间"}), 400
     s = get_session()
     try:
-        users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all()
+        users = s.query(ProxyUser).filter(ProxyUser.id.in_(ids)).all() if ids else []
+        affected_line_ids = [user.line_id for user in users]
         limit_ids = []
         for user in users:
             if days:
@@ -1848,9 +2315,62 @@ def batch_renew():
         s.commit()
         for user in users:
             s.refresh(user)
-        _reload_proxy(s)
-        _apply_user_limits_background(limit_ids)
-        return jsonify({"ok": True, "data": {"updated": len(users), "users": [u.to_dict() for u in users]}})
+        if users:
+            _reload_proxy(s, affected_line_ids)
+            _apply_user_limits_background(limit_ids)
+
+        remote_updated = 0
+        remote_users = []
+        remote_errors = []
+        if remote_ids:
+            server_ids = sorted({server_id for server_id, _ in remote_ids})
+            remote_servers = {
+                server.id: server
+                for server in s.query(ManagedServer).filter(ManagedServer.id.in_(server_ids)).all()
+            }
+            grouped = {}
+            for server_id, user_id in remote_ids:
+                grouped.setdefault(server_id, []).append(user_id)
+
+            def renew_remote(server_id, user_ids):
+                server = remote_servers.get(server_id)
+                if not server:
+                    return 0, [], [f"server {server_id} not found"]
+                result = _remote_panel_post(
+                    server,
+                    "/api/users/batch-renew",
+                    {"ids": user_ids, "days": days, "expire_at": data.get("expire_at") or ""},
+                    timeout=45,
+                )
+                payload = result.get("data") or {}
+                rows = payload.get("users") or []
+                for item in rows:
+                    item["id"] = f"remote:{server.id}:{item.get('id')}"
+                    item["managed_server_id"] = server.id
+                    item["managed_server_ip"] = server.ip
+                    item["line_ip"] = server.ip
+                return int(payload.get("updated") or len(rows) or 0), rows, []
+
+            with ThreadPoolExecutor(max_workers=min(8, max(1, len(grouped)))) as executor:
+                futures = [executor.submit(renew_remote, server_id, user_ids) for server_id, user_ids in grouped.items()]
+                for future in as_completed(futures):
+                    try:
+                        count, rows, errors = future.result()
+                        remote_updated += count
+                        remote_users.extend(rows)
+                        remote_errors.extend(errors)
+                    except Exception as exc:
+                        remote_errors.append(str(exc))
+
+        result_users = [u.to_dict() for u in users] + remote_users
+        return jsonify({
+            "ok": True,
+            "data": {
+                "updated": len(users) + remote_updated,
+                "users": result_users,
+                "errors": remote_errors,
+            },
+        })
     finally:
         s.close()
 
@@ -1864,10 +2384,11 @@ def delete_user(uid):
         if not user:
             return jsonify({"ok": False, "error": "用户不存在"}), 404
         limit_ids = [user.id]
+        affected_line_ids = [user.line_id]
         log_detail = _format_log_user_detail(user)
+        apply_status = _apply_runtime_after_delete(s, [user], affected_line_ids)
         s.delete(user)
         s.commit()
-        apply_status = _reload_proxy(s)
         _clear_user_limits_background(limit_ids)
         _add_user_operation_log(s, "删除入站", log_detail)
         s.commit()
@@ -1888,6 +2409,7 @@ def update_user(uid):
 
         if data.get("edit_limits_only"):
             old_limit_enabled = bool(parse_speed_to_bps(user.speed_limit))
+            affected_line_ids = [user.line_id]
             speed_limit = _normalize_speed_limit(data.get("speed_limit"))
             set_traffic = _normalize_traffic_limit(data.get("set_traffic") or data.get("add_traffic"))
 
@@ -1902,7 +2424,7 @@ def update_user(uid):
 
             s.commit()
             s.refresh(user)
-            _reload_proxy(s)
+            _apply_runtime_for_user(s, user, affected_line_ids)
             if old_limit_enabled:
                 _clear_user_limits_background([user.id])
             if user.status and parse_speed_to_bps(user.speed_limit):
@@ -1931,6 +2453,8 @@ def update_user(uid):
             return jsonify({"ok": False, "error": "端口不正确"}), 400
         if listen_port < 1 or listen_port > 65535:
             return jsonify({"ok": False, "error": "端口范围必须是 1-65535"}), 400
+        if _is_windows_excluded_port(listen_port):
+            return jsonify({"ok": False, "error": f"端口 {listen_port} 被 Windows 系统保留，请换一个端口"}), 400
         exists = s.query(ProxyUser).filter(ProxyUser.id != uid, ProxyUser.listen_port == listen_port).first()
         if exists:
             return jsonify({"ok": False, "error": f"端口 {listen_port} 已被其他节点使用"}), 400
@@ -1962,6 +2486,7 @@ def update_user(uid):
             user.ss_password = None
 
         old_limit_enabled = bool(parse_speed_to_bps(user.speed_limit))
+        old_line_id = user.line_id
         user.line_id = line.id
         user.protocol = proto
         user.listen_port = listen_port
@@ -1977,7 +2502,11 @@ def update_user(uid):
 
         s.commit()
         s.refresh(user)
-        _reload_proxy(s)
+        if _is_inbound_instance(user):
+            inbound_instance_manager.stop_user(user.id)
+            inbound_instance_manager.apply_user(user)
+        else:
+            _reload_proxy(s, [old_line_id, user.line_id])
         if old_limit_enabled:
             _clear_user_limits_background([user.id])
         if user.status and parse_speed_to_bps(user.speed_limit):
@@ -1995,6 +2524,7 @@ def toggle_user(uid):
         user = s.query(ProxyUser).get(uid)
         if not user:
             return jsonify({"ok": False, "error": "用户不存在"}), 404
+        affected_line_ids = [user.line_id]
         user.status = 0 if user.status else 1
         if user.status:
             _, user.note = _pop_auto_restore_marker(user.note)
@@ -2006,8 +2536,9 @@ def toggle_user(uid):
             _apply_user_limits_background([user.id])
         else:
             _clear_user_limits_background([user.id])
-        apply_status = _reload_proxy(s)
-        apply_status = _ensure_user_runtime_applied(s, user, bool(user.status), apply_status)
+        apply_status = _apply_runtime_for_user(s, user, affected_line_ids)
+        if not _is_inbound_instance(user):
+            apply_status = _ensure_user_runtime_applied(s, user, bool(user.status), apply_status)
         data = user.to_dict()
         data["apply_status"] = apply_status
         return jsonify({"ok": True, "data": data})
@@ -2037,7 +2568,7 @@ def connection_info(uid):
             user.status = 0
             s.commit()
             _clear_user_limits_background([user.id])
-            _reload_proxy(s)
+            _reload_proxy(s, [user.line_id])
             return jsonify({"ok": False, "error": "节点已到期并停用"}), 410
         if not user.status:
             return jsonify({"ok": False, "error": "节点已停用"}), 410
@@ -2123,12 +2654,13 @@ def _change_inbound_ip_one(s, data: dict, spec: dict, requested_ip: str = "") ->
 
     if old_user:
         limit_ids = [old_user.id]
+        affected_line_ids = [old_user.line_id]
         s.delete(old_user)
         s.commit()
-        _reload_proxy(s)
+        _reload_proxy(s, affected_line_ids)
         _clear_user_limits_background(limit_ids)
     else:
-        _remote_panel_delete(old_remote_server, f"/api/users/{old_remote_item.get('id')}")
+        _remote_panel_delete(old_remote_server, f"/api/users/{_remote_item_local_id(old_remote_item)}")
 
     output = _change_ip_output(spec, new_ip)
     created_detail = _format_log_user_detail(created_rows[0], new_ip)
@@ -2347,7 +2879,7 @@ def test_user(uid):
             user.status = 0
             s.commit()
             _clear_user_limits_background([user.id])
-            _reload_proxy(s)
+            _reload_proxy(s, [user.line_id])
             return jsonify({"ok": False, "error": "节点已到期并停用"}), 410
         if not user.status:
             return jsonify({"ok": False, "error": "节点已停用"}), 410

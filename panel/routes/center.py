@@ -1,5 +1,6 @@
 """Center API for 42IP control center."""
 import base64
+import subprocess
 import time
 from functools import wraps
 
@@ -13,6 +14,7 @@ from services.traffic_collector import snapshot_connections
 
 bp = Blueprint("center", __name__, url_prefix="/api/center")
 _probe_last = {"time": 0.0, "recv": 0, "sent": 0}
+_conn_count_cache = {"time": 0.0, "count": 0}
 
 
 def _basic_credentials():
@@ -47,6 +49,29 @@ def center_required(func):
     return wrapper
 
 
+def _system_connection_count() -> int:
+    now = time.time()
+    if now - float(_conn_count_cache.get("time") or 0) < 15:
+        return int(_conn_count_cache.get("count") or 0)
+    try:
+        if psutil.WINDOWS:
+            proc = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            count = sum(1 for line in proc.stdout.splitlines() if line.lstrip().startswith("TCP"))
+        else:
+            proc = subprocess.run(["ss", "-Htun"], capture_output=True, text=True, timeout=2)
+            count = sum(1 for line in proc.stdout.splitlines() if line.strip())
+        _conn_count_cache.update({"time": now, "count": count})
+        return count
+    except Exception:
+        return int(_conn_count_cache.get("count") or 0)
+
+
 @bp.route("/status", methods=["GET", "POST"])
 @center_required
 def status():
@@ -78,10 +103,7 @@ def probe():
     _probe_last = {"time": now, "recv": net.bytes_recv, "sent": net.bytes_sent}
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
-    try:
-        connections = len(psutil.net_connections(kind="inet"))
-    except Exception:
-        connections = 0
+    connections = _system_connection_count()
     return jsonify({"ok": True, "data": {
         "cpu_percent": psutil.cpu_percent(interval=0.05),
         "memory_percent": mem.percent,
@@ -96,7 +118,7 @@ def probe():
     }})
 
 
-@bp.route("/nodes", methods=["GET", "POST"])
+@bp.route("/nodes", methods=["GET"])
 @center_required
 def nodes():
     s = get_session()
@@ -130,10 +152,11 @@ def lines():
         rows = []
         for line in s.query(Line).options(selectinload(Line.users)).order_by(Line.name, Line.id).all():
             item = line.to_dict()
-            item["node_count"] = len(line.users)
+            active_users = [user for user in (line.users or []) if int(user.status or 0) == 1]
+            item["node_count"] = len(active_users)
             item["connection_count"] = sum(
                 int((live_map.get(user.id) or {}).get("connections") or 0)
-                for user in line.users
+                for user in active_users
             )
             rows.append(item)
         return jsonify({"ok": True, "data": rows})

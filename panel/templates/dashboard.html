@@ -12,10 +12,49 @@
     <div class="probe-grid">
       <div class="probe-item probe-cpu"><span>CPU</span><strong id="probeCpu">-</strong></div>
       <div class="probe-item probe-mem"><span>内存</span><strong id="probeMemory">-</strong></div>
-      <div class="probe-item probe-conn"><span>连接数</span><strong id="probeConnections">-</strong></div>
-      <div class="probe-item probe-band"><span>实时带宽</span><strong id="probeBandwidth">-</strong></div>
+      <div class="probe-item probe-conn"><span>&#26426;&#22120;&#36830;&#25509; EST/&#20840;&#37096;</span><strong id="probeConnections">-</strong></div>
+      <div class="probe-item probe-band"><span>实时&#24102;&#23485;</span><strong id="probeBandwidth">-</strong></div>
       <div class="probe-item probe-traffic"><span>系统总网卡</span><strong id="probeTraffic">-</strong></div>
       <div class="probe-item probe-disk"><span>硬盘</span><strong id="probeDisk">-</strong></div>
+    </div>
+  </div>
+
+
+  <div class="card-dark mb-4 singbox-monitor">
+    <div class="d-flex justify-content-between align-items-center mb-3 gap-3 flex-wrap">
+      <div>
+        <h5 class="mb-1">sing-box &#23454;&#20363;&#30417;&#25511;</h5>
+        <div class="text-muted small" id="singboxTime">-</div>
+      </div>
+      <div class="singbox-summary">
+        <span>&#23454;&#20363; <strong id="sbTotal">-</strong></span>
+        <span>&#36816;&#34892; <strong id="sbRunning">-</strong></span>
+        <span>&#36830;&#25509; <strong id="sbConnections">-</strong></span>
+        <span>&#19979;&#34892; <strong id="sbDownRate">-</strong></span>
+        <span>&#19978;&#34892; <strong id="sbUpRate">-</strong></span>
+        <span>&#21464;&#26356; <strong id="sbChanges">-</strong></span>
+      </div>
+    </div>
+    <div class="singbox-table-wrap">
+      <table class="table table-dark table-hover singbox-table">
+        <thead>
+          <tr>
+            <th>&#32447;&#36335;</th>
+            <th>IP</th>
+            <th>PID</th>
+            <th>&#29366;&#24577;</th>
+            <th>&#36830;&#25509;</th>
+            <th>&#24102;&#23485;</th>
+            <th>&#32047;&#35745;&#27969;&#37327;</th>
+            <th>&#29992;&#25143;</th>
+            <th>&#21464;&#26356;&#27425;&#25968;</th>
+            <th>&#21551;&#21160;&#26102;&#38388;</th>
+          </tr>
+        </thead>
+        <tbody id="singboxRows">
+          <tr><td colspan="10" class="text-center text-muted py-4">&#21152;&#36733;&#20013;...</td></tr>
+        </tbody>
+      </table>
     </div>
   </div>
 
@@ -24,6 +63,35 @@
     <div id="chartTraffic" style="height: 320px;"></div>
   </div>
 </div>
+{% endblock %}
+
+
+{% block styles %}
+<style>
+.singbox-summary { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.singbox-summary span { display: inline-flex; align-items: center; gap: 4px; min-height: 30px; padding: 5px 10px; border: 1px solid #eef1f7; border-radius: 8px; background: #fbfcff; color: #7d8398; font-size: 12px; font-weight: 800; }
+.singbox-summary strong { color: #242736; font-weight: 900; }
+.singbox-table-wrap { max-height: 520px; overflow: auto; border: 1px solid #eef1f7; border-radius: 8px; }
+.singbox-table { min-width: 1080px; table-layout: fixed; }
+.singbox-table thead th { position: sticky; top: 0; z-index: 1; }
+.singbox-table th:nth-child(1), .singbox-table td:nth-child(1) { width: 74px; }
+.singbox-table th:nth-child(2), .singbox-table td:nth-child(2) { width: 132px; }
+.singbox-table th:nth-child(3), .singbox-table td:nth-child(3) { width: 82px; }
+.singbox-table th:nth-child(4), .singbox-table td:nth-child(4) { width: 86px; }
+.singbox-table th:nth-child(5), .singbox-table td:nth-child(5) { width: 72px; }
+.singbox-table th:nth-child(6), .singbox-table td:nth-child(6) { width: 150px; }
+.singbox-table th:nth-child(7), .singbox-table td:nth-child(7) { width: 170px; }
+.singbox-table th:nth-child(8), .singbox-table td:nth-child(8) { width: 78px; }
+.singbox-table th:nth-child(9), .singbox-table td:nth-child(9) { width: 110px; }
+.singbox-table th:nth-child(10), .singbox-table td:nth-child(10) { width: 150px; }
+.singbox-table td { font-size: 13px; line-height: 1.35; word-break: break-word; }
+.sb-status { display: inline-flex; align-items: center; min-height: 26px; padding: 4px 8px; border-radius: 999px; font-weight: 900; font-size: 12px; }
+.sb-status.running { background: #dff9ec; color: #20a866; }
+.sb-status.down { background: #ffe7eb; color: #f34f63; }
+.sb-muted { color: #9aa1b5; font-size: 12px; }
+.sb-rate, .sb-traffic { display: grid; gap: 2px; }
+@media (max-width: 760px) { .singbox-summary { justify-content: flex-start; } .singbox-table-wrap { max-height: 560px; } }
+</style>
 {% endblock %}
 
 {% block scripts %}
@@ -118,7 +186,7 @@ async function loadOverview() {
   latestOverview = d;
   if (!trafficChart) {
     const box = $id('chartTraffic');
-    if (box && !chartLoading) box.textContent = '图表加载中...';
+    if (box && !chartLoading) box.textContent = '图表&#21152;&#36733;&#20013;...';
     return;
   }
   renderTrafficChart(d);
@@ -134,18 +202,72 @@ async function loadProbe() {
   if (d.disk_project && (!d.disk_system || d.disk_project.path !== d.disk_system.path)) disks.push(`Project ${diskText(d.disk_project)}`);
   setText('probeCpu', `${d.cpu_percent}%`);
   setText('probeMemory', `${formatBytes(d.memory_used)} / ${formatBytes(d.memory_total)} (${d.memory_percent}%)`);
-  setText('probeConnections', d.connections);
+  setText('probeConnections', `${d.machine_connections_established ?? d.connections} / ${d.machine_connections_total ?? d.connections}`);
   setText('probeBandwidth', `Down ${formatBytes(d.net_rx_bps)}/s Up ${formatBytes(d.net_tx_bps)}/s`);
   setText('probeTraffic', `Recv ${formatBytes(d.net_bytes_recv)} Sent ${formatBytes(d.net_bytes_sent)}`);
   setText('probeDisk', disks.join(' | ') || `${d.disk_percent}% / ${formatBytes(d.disk_used)} / ${formatBytes(d.disk_total)}`);
   setText('probeTime', d.time || '');
 }
 
+
+function formatRate(bytes) {
+  return `${formatBytes(bytes || 0)}/s`;
+}
+
+function renderSingboxRows(rows) {
+  const body = $id('singboxRows');
+  if (!body) return;
+  if (!rows || !rows.length) {
+    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">&#26242;&#26080;&#23454;&#20363;</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(row => {
+    const status = row.running ? 'running' : 'down';
+    const statusText = row.running ? '\u8fd0\u884c\u4e2d' : '\u5f02\u5e38';
+    const changeText = row.last_changed_at
+      ? `${row.pid_changes || 0}<div class="sb-muted">${escapeHtml(row.last_changed_at)}</div>`
+      : `${row.pid_changes || 0}`;
+    return `
+      <tr>
+        <td><strong>#${row.line_id}</strong></td>
+        <td>${escapeHtml(row.public_ip || '-')}</td>
+        <td>${row.pid || '-'}</td>
+        <td><span class="sb-status ${status}">${statusText}</span></td>
+        <td>${row.connections || 0}</td>
+        <td><div class="sb-rate"><span>Down ${formatRate(row.download_bps)}</span><span>Up ${formatRate(row.upload_bps)}</span></div></td>
+        <td><div class="sb-traffic"><span>Down ${formatBytes(row.bytes_out || 0)}</span><span>Up ${formatBytes(row.bytes_in || 0)}</span></div></td>
+        <td>${row.active_users || 0}/${row.total_users || 0}</td>
+        <td>${changeText}</td>
+        <td>${escapeHtml(row.started_at || '-')}</td>
+      </tr>`;
+  }).join('');
+}
+
+async function loadSingboxInstances() {
+  const r = await api.get('/api/singbox/instances');
+  if (!r.ok) {
+    const body = $id('singboxRows');
+    if (body) body.innerHTML = `<tr><td colspan="10" class="text-center text-danger py-4">${escapeHtml(r.error || '&#35835;&#21462;&#22833;&#36133;')}</td></tr>`;
+    return;
+  }
+  const d = r.data || {};
+  const totals = d.totals || {};
+  setText('singboxTime', d.time || '');
+  setText('sbTotal', totals.instances ?? '-');
+  setText('sbRunning', totals.running ?? '-');
+  setText('sbConnections', totals.connections ?? '-');
+  setText('sbDownRate', formatRate(totals.download_bps));
+  setText('sbUpRate', formatRate(totals.upload_bps));
+  setText('sbChanges', totals.pid_changes ?? '-');
+  renderSingboxRows(d.rows || []);
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
-  await Promise.all([loadOverview(), loadProbe()]);
+  await Promise.all([loadOverview(), loadProbe(), loadSingboxInstances()]);
   scheduleChartLoad();
   setInterval(loadOverview, 30000);
   setInterval(loadProbe, 5000);
+  setInterval(loadSingboxInstances, 5000);
 });
 </script>
 {% endblock %}

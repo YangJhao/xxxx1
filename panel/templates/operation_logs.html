@@ -6,7 +6,7 @@
   <button class="btn btn-soft" id="btnRefreshLogs"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
 </div>
 
-<div class="line-table-wrap">
+<div class="line-table-wrap operation-log-wrap">
   <table class="line-table operation-log-table">
     <thead>
       <tr>
@@ -31,6 +31,13 @@ function formatDateTime(value) {
   return Number.isNaN(d.getTime()) ? value : d.toLocaleString();
 }
 
+function formatLogDetail(value) {
+  const text = String(value || '-');
+  return escapeHtml(text)
+    .replace(/\uFF1B/g, '&#65307;<br>')
+    .replace(/;\s*/g, ';<br>');
+}
+
 async function loadLogs() {
   const r = await api.get('/api/operation-logs');
   if (!r.ok) return toast(r.error || '读取日志失败', 'error');
@@ -47,7 +54,7 @@ async function loadLogs() {
         <td>${escapeHtml(row.operator || '-')}</td>
         <td>${escapeHtml(row.module || '-')}</td>
         <td>${escapeHtml(row.action || '-')}</td>
-        <td>${escapeHtml(row.detail || '-')}</td>
+        <td><div class="operation-log-detail">${formatLogDetail(row.detail)}</div></td>
         <td>${escapeHtml(row.ip || '-')}</td>
         <td>${escapeHtml(formatDateTime(row.created_at))}</td>
       </tr>
