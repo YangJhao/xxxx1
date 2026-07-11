@@ -403,6 +403,57 @@ def _remote_panel_download(server: ManagedServer, path: str, timeout: int = 20) 
     return data, filename
 
 
+def _remote_panel_download_via_ssh(server: ManagedServer, path: str, timeout: int = 20) -> tuple[bytes, str]:
+    safe_path = json.dumps(path)
+    command = f"""python3 - <<'PY'
+import base64
+import http.cookiejar
+import json
+import re
+import urllib.request
+
+base = 'http://127.0.0.1:18080'
+path = {safe_path}
+cj = http.cookiejar.CookieJar()
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+
+def post(path, body):
+    raw = json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(base + path, data=raw, headers={{'Content-Type': 'application/json'}}, method='POST')
+    with opener.open(req, timeout={int(timeout)}) as resp:
+        return json.loads(resp.read().decode('utf-8', 'replace'))
+
+login = post('/api/login', {{'username': 'admin', 'password': 'admin123'}})
+if not login.get('ok'):
+    raise SystemExit('login failed: ' + (login.get('error') or 'unknown'))
+req = urllib.request.Request(base + path, method='GET')
+with opener.open(req, timeout={int(timeout)}) as resp:
+    data = resp.read()
+    disposition = resp.headers.get('Content-Disposition') or ''
+match = re.search(r'filename="?([^";]+)"?', disposition)
+print(json.dumps({{'filename': match.group(1) if match else '', 'data': base64.b64encode(data).decode('ascii')}}))
+PY"""
+    ssh = _ssh_connect_managed_server(server, timeout=max(timeout, 12))
+    try:
+        code, out, err = _ssh_run(ssh, command, timeout=max(timeout + 20, 45))
+    finally:
+        ssh.close()
+    if code != 0:
+        raise RuntimeError((err or out or f"ssh panel download exit {code}")[-1200:])
+    try:
+        payload = json.loads(out.strip() or "{}")
+        return base64.b64decode(payload.get("data") or ""), payload.get("filename") or ""
+    except Exception as exc:
+        raise RuntimeError(f"SSH download response invalid: {out[:200]}") from exc
+
+
+def _remote_panel_download_resilient(server: ManagedServer, path: str, timeout: int = 20) -> tuple[bytes, str]:
+    try:
+        return _remote_panel_download(server, path, timeout=timeout)
+    except Exception:
+        return _remote_panel_download_via_ssh(server, path, timeout=timeout)
+
+
 def _remote_panel_delete(server: ManagedServer, path: str, timeout: int = 20) -> dict:
     base = f"http://{server.ip}:18080"
     cj = http.cookiejar.CookieJar()
@@ -724,7 +775,8 @@ def _create_on_managed_servers(session, server_ids: list[int], data: dict, count
             base_custom_port = int(data.get("custom_port"))
         except Exception:
             base_custom_port = None
-    if base_custom_port is not None:
+    protocol = (data.get("protocol") or "").strip().lower()
+    if base_custom_port is not None and protocol != "wireguard":
         targets = _least_inbound_unique_targets(servers, count)
         if len(targets) < max(0, int(count or 0)):
             skipped.append(f"固定端口批量创建时每台服务器只创建 1 个，已按可用服务器数创建 {len(targets)} 个")
@@ -2880,7 +2932,7 @@ def remote_wireguard_conf():
         server = s.query(ManagedServer).get(server_id)
         if not server:
             return jsonify({"ok": False, "error": "server not found"}), 404
-        data, filename = _remote_panel_download(server, f"/api/users/{user_id}/wireguard.conf")
+        data, filename = _remote_panel_download_resilient(server, f"/api/users/{user_id}/wireguard.conf")
         filename = filename or f"{server.ip}-{user_id}.conf"
         return Response(
             data,
@@ -2946,7 +2998,7 @@ def wireguard_zip():
                 server = remote_servers.get(server_id)
                 if not server:
                     continue
-                data, name = _remote_panel_download(server, f"/api/users/{user_id}/wireguard.conf")
+                data, name = _remote_panel_download_resilient(server, f"/api/users/{user_id}/wireguard.conf")
                 name = name or f"{server.ip}-{user_id}.conf"
                 if name in used_names:
                     stem = name[:-5] if name.endswith(".conf") else name

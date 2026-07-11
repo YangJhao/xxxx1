@@ -220,7 +220,7 @@
             <button type="button" data-days="90">90天</button>
           </div>
         </div>
-        <div><label class="form-label">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"></div>
+        <div><label class="form-label" id="userCountLabel">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"><div class="form-hint d-none" id="wireguardCountHint">WireGuard 会按数量生成独立配置文件</div></div>
         <div><label class="form-label">备注</label><input class="form-control" id="userNote" placeholder="写入 XUI 备注"></div>
       </div></form></div>
       <div class="modal-footer create-modal-footer"><button class="btn btn-primary create-submit" id="btnSaveUser">创建</button><button class="btn btn-soft" data-bs-dismiss="modal">取消</button></div>
@@ -2188,6 +2188,8 @@ $(async () => {
     $('.custom-port-wrap').toggle(['socks5', 'http', 'ss', 'vless', 'vmess', 'trojan'].includes(proto));
     $('#userUsername').closest('div').toggle(!isHy2 && !isWg);
     $('#userPassword').closest('div').toggle(!isHy2 && !isWg);
+    $('#userCountLabel').text(isWg ? '配置文件数' : '个数');
+    $('#wireguardCountHint').toggleClass('d-none', !isWg);
     $('#accountLabel').text(isSs ? '加密方式' : '账号');
     $('#passwordLabel').text(['vless', 'vmess'].includes(proto) ? 'UUID' : '密码');
     $('#userUsername').attr('placeholder', '默认使用到期日期');
