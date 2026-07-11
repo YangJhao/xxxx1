@@ -776,10 +776,30 @@ def _create_on_managed_servers(session, server_ids: list[int], data: dict, count
         except Exception:
             base_custom_port = None
     protocol = (data.get("protocol") or "").strip().lower()
+    target_node_count = 0
+    files_per_node = 0
+    if protocol == "wireguard":
+        try:
+            target_node_count = min(max(int(data.get("target_node_count") or 0), 0), 500)
+        except Exception:
+            target_node_count = 0
+        try:
+            files_per_node = min(max(int(data.get("files_per_node") or 0), 0), 500)
+        except Exception:
+            files_per_node = 0
     if base_custom_port is not None and protocol != "wireguard":
         targets = _least_inbound_unique_targets(servers, count)
         if len(targets) < max(0, int(count or 0)):
             skipped.append(f"固定端口批量创建时每台服务器只创建 1 个，已按可用服务器数创建 {len(targets)} 个")
+    elif protocol == "wireguard" and target_node_count > 0 and files_per_node > 0:
+        picked_servers = _least_inbound_unique_targets(servers, target_node_count)
+        if len(picked_servers) < target_node_count:
+            skipped.append(f"WireGuard 节点数量不足，已按可用服务器数选择 {len(picked_servers)} 个节点")
+        targets = []
+        for server in picked_servers:
+            targets.extend([server] * files_per_node)
+        if len(targets) > max(0, int(count or 0)):
+            targets = targets[: max(0, int(count or 0))]
     else:
         targets = _least_inbound_targets(servers, count)
 

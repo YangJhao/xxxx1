@@ -220,7 +220,9 @@
             <button type="button" data-days="90">90天</button>
           </div>
         </div>
-        <div><label class="form-label" id="userCountLabel">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"><div class="form-hint d-none" id="wireguardCountHint">WireGuard 会按数量生成独立配置文件</div></div>
+        <div id="userCountWrap"><label class="form-label" id="userCountLabel">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"><div class="form-hint d-none" id="wireguardCountHint">WireGuard 会按数量生成独立配置文件</div></div>
+        <div class="wg-count-field d-none"><label class="form-label">节点数量</label><input class="form-control" id="wgNodeCount" type="number" min="1" max="500" value="1"></div>
+        <div class="wg-count-field d-none"><label class="form-label">每节点文件数</label><input class="form-control" id="wgFilesPerNode" type="number" min="1" max="500" value="1"><div class="form-hint" id="wgTotalHint">总文件数：1</div></div>
         <div><label class="form-label">备注</label><input class="form-control" id="userNote" placeholder="写入 XUI 备注"></div>
       </div></form></div>
       <div class="modal-footer create-modal-footer"><button class="btn btn-primary create-submit" id="btnSaveUser">创建</button><button class="btn btn-soft" data-bs-dismiss="modal">取消</button></div>
@@ -1568,7 +1570,15 @@ function resetForm() {
   createPickerManual = false;
   setCreateNodeSelection(defaultCreateSelection());
   $('#userCount').val(1);
+  $('#wgNodeCount,#wgFilesPerNode').val(1);
+  updateWireGuardTotalHint();
   syncDefaultAccountPassword(true);
+}
+
+function updateWireGuardTotalHint() {
+  const nodes = Math.max(1, parseInt($('#wgNodeCount').val() || '1', 10));
+  const perNode = Math.max(1, parseInt($('#wgFilesPerNode').val() || '1', 10));
+  $('#wgTotalHint').text(`总文件数：${nodes * perNode}`);
 }
 
 function toDatetimeLocal(value) {
@@ -1630,8 +1640,12 @@ async function saveUser() {
   const serverIds = useAllServers ? visibleManagedServers().map(server => String(server.id)) : lineValues.filter(value => String(value).startsWith('server:')).map(value => String(value).split(':')[1]).filter(Boolean);
   const selectedLineIds = lineValues.filter(value => !String(value).startsWith('server:'));
   const hasRemoteTargets = serverIds.length > 0;
-  const localCount = useLiteLine ? 1 : 0;
-  const requestedCount = Math.max(1, parseInt($('#userCount').val() || '1', 10));
+  const wgNodeCount = Math.max(1, parseInt($('#wgNodeCount').val() || '1', 10));
+  const wgFilesPerNode = Math.max(1, parseInt($('#wgFilesPerNode').val() || '1', 10));
+  const requestedCount = proto === 'wireguard'
+    ? Math.min(500, wgNodeCount * wgFilesPerNode)
+    : Math.max(1, parseInt($('#userCount').val() || '1', 10));
+  const localCount = useLiteLine ? (proto === 'wireguard' ? Math.min(wgFilesPerNode, requestedCount) : 1) : 0;
   const remoteCount = hasRemoteTargets ? Math.max(0, requestedCount - localCount) : 0;
   const data = {
     username: proto === 'hysteria2' ? 'hy2' : (proto === 'ss' ? 'ss' : ($('#userUsername').val().trim() || defaultCredential)),
@@ -1651,6 +1665,8 @@ async function saveUser() {
     traffic_limit: $('#userTrafficLimit').val().trim(),
     expire_at: expireValue || null,
     count: requestedCount,
+    target_node_count: proto === 'wireguard' ? wgNodeCount : null,
+    files_per_node: proto === 'wireguard' ? wgFilesPerNode : null,
     note: $('#userNote').val().trim(),
   };
   try {
@@ -2188,14 +2204,18 @@ $(async () => {
     $('.custom-port-wrap').toggle(['socks5', 'http', 'ss', 'vless', 'vmess', 'trojan'].includes(proto));
     $('#userUsername').closest('div').toggle(!isHy2 && !isWg);
     $('#userPassword').closest('div').toggle(!isHy2 && !isWg);
-    $('#userCountLabel').text(isWg ? '配置文件数' : '个数');
+    $('#userCountWrap').toggle(!isWg);
+    $('.wg-count-field').toggleClass('d-none', !isWg);
+    $('#userCountLabel').text('个数');
     $('#wireguardCountHint').toggleClass('d-none', !isWg);
+    updateWireGuardTotalHint();
     $('#accountLabel').text(isSs ? '加密方式' : '账号');
     $('#passwordLabel').text(['vless', 'vmess'].includes(proto) ? 'UUID' : '密码');
     $('#userUsername').attr('placeholder', '默认使用到期日期');
     $('#userPassword').attr('placeholder', '默认使用到期日期');
     syncDefaultAccountPassword(false);
   }).trigger('change');
+  $('#wgNodeCount,#wgFilesPerNode').on('input change', updateWireGuardTotalHint);
 });
 </script>
 {% endblock %}
