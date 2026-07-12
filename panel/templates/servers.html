@@ -492,12 +492,34 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       toast(successText, 'success', 5000);
       await loadServers(false);
+      if (options.pollStatus) {
+        pollServerAction(ids, options.pollStatus);
+      }
     } finally {
       buttons.forEach((btn, index) => {
         btn.disabled = false;
         btn.textContent = oldLabels[index] || '操作';
       });
     }
+  }
+
+  async function pollServerAction(ids, options = {}) {
+    const idSet = new Set(ids.map(Number));
+    const timeoutMs = Number(options.timeoutMs || 180000);
+    const intervalMs = Number(options.intervalMs || 5000);
+    const startedAt = Date.now();
+    const pendingText = options.pendingText || ['任务已提交', '执行中', '安装中', '升级中', '同步中', '检测中'];
+    const isPending = row => {
+      const text = String(row.last_error || '');
+      return pendingText.some(item => text.includes(item)) || ['installing', 'upgrading', 'syncing', 'detecting'].includes(String(row.install_status || ''));
+    };
+    while (Date.now() - startedAt < timeoutMs) {
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+      await loadServers(false);
+      const pending = servers.filter(row => idSet.has(Number(row.id)) && isPending(row));
+      if (!pending.length) return;
+    }
+    toast('后台任务仍在执行，已停止自动刷新，可手动刷新查看结果', 'info', 5000);
   }
 
   function openEditServer(id) {
@@ -593,6 +615,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadingText: '安装中...',
         startText: '已开始安装，这个过程可能需要几分钟',
         markInstalling: true,
+        pollStatus: true,
       });
     } else if (btn.dataset.action === 'detect-lite') {
     await runServerAction('/api/servers/detect-lite', [id], '检测完成，状态和入站映射已刷新', {
@@ -601,6 +624,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadingText: '检测中...',
         startText: '正在检测轻量面板安装状态',
         refreshCounts: true,
+        pollStatus: true,
       });
     } else if (btn.dataset.action === 'test') {
       await runAction('/api/servers/test', [id], '连接测试完成');
@@ -616,6 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
       loadingText: '安装中...',
       startText: '已开始批量安装，这个过程可能需要几分钟',
       markInstalling: true,
+      pollStatus: true,
     });
   });
   document.getElementById('btnUpgradeSelected').addEventListener('click', () => {
@@ -624,6 +649,7 @@ document.addEventListener('DOMContentLoaded', () => {
       selector: '#btnUpgradeSelected',
       loadingText: '升级中...',
       startText: '已开始批量升级，这个过程可能需要几分钟',
+      pollStatus: true,
     });
   });
   document.getElementById('btnTestSelected').addEventListener('click', () => runAction('/api/servers/test', selectedIds(), '连接测试完成'));
