@@ -1,9 +1,14 @@
 window.api = {
   async request(method, url, body) {
     try {
-      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      const finalUrl = method === 'GET' ? api.cacheBust(url) : url;
+      const opts = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+      };
       if (body !== undefined) opts.body = JSON.stringify(body);
-      const r = await fetch(url, opts);
+      const r = await fetch(finalUrl, opts);
       if (r.status === 401) {
         location.href = '/login';
         return { ok: false, error: '未登录' };
@@ -24,6 +29,10 @@ window.api = {
         : (e.message || '网络请求失败');
       return { ok: false, error: message };
     }
+  },
+  cacheBust(url) {
+    const sep = String(url).includes('?') ? '&' : '?';
+    return `${url}${sep}_ts=${Date.now()}`;
   },
   get: (url) => api.request('GET', url),
   post: (url, data) => api.request('POST', url, data || {}),
