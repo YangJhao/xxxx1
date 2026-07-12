@@ -220,9 +220,9 @@
             <button type="button" data-days="90">90天</button>
           </div>
         </div>
-        <div id="userCountWrap"><label class="form-label" id="userCountLabel">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"><div class="form-hint d-none" id="wireguardCountHint">WireGuard 会按数量生成独立配置文件</div></div>
-        <div class="wg-count-field d-none"><label class="form-label">节点数量</label><input class="form-control" id="wgNodeCount" type="number" min="1" max="500" value="1"></div>
-        <div class="wg-count-field d-none"><label class="form-label">每节点文件数</label><input class="form-control" id="wgFilesPerNode" type="number" min="1" max="500" value="1"><div class="form-hint" id="wgTotalHint">总文件数：1</div></div>
+        <div id="userCountWrap"><label class="form-label" id="userCountLabel">个数</label><input class="form-control" id="userCount" type="number" min="1" max="500" value="1"></div>
+        <div class="wg-count-field d-none"><label class="form-label">入站数量</label><input class="form-control" id="wgNodeCount" type="number" min="1" max="500" value="1"></div>
+        <div class="wg-count-field d-none"><label class="form-label">每入站文件数</label><input class="form-control" id="wgFilesPerNode" type="number" min="1" max="500" value="1"><div class="form-hint" id="wgTotalHint">总文件数：1</div></div>
         <div><label class="form-label">备注</label><input class="form-control" id="userNote" placeholder="写入 XUI 备注"></div>
       </div></form></div>
       <div class="modal-footer create-modal-footer"><button class="btn btn-primary create-submit" id="btnSaveUser">创建</button><button class="btn btn-soft" data-bs-dismiss="modal">取消</button></div>
@@ -1556,7 +1556,7 @@ function resetForm() {
   $('#editingUserId').val('');
   $('#userModalTitle').text('批量创建入站');
   $('#btnSaveUser').text('创建');
-  $('#userCount').closest('div').show();
+  $('#userCountWrap').removeClass('d-none').prop('hidden', false).show();
   $('#userProtocol,#userLine').prop('disabled', false);
   $('#userUsername,#userPassword').val('');
   $('#userCustomPort,#userNote,#userOwner,#userExclude,#projectExclude').val('');
@@ -2204,10 +2204,9 @@ $(async () => {
     $('.custom-port-wrap').toggle(['socks5', 'http', 'ss', 'vless', 'vmess', 'trojan'].includes(proto));
     $('#userUsername').closest('div').toggle(!isHy2 && !isWg);
     $('#userPassword').closest('div').toggle(!isHy2 && !isWg);
-    $('#userCountWrap').toggle(!isWg);
+    $('#userCountWrap').toggleClass('d-none', isWg).prop('hidden', isWg).toggle(!isWg);
     $('.wg-count-field').toggleClass('d-none', !isWg);
     $('#userCountLabel').text('个数');
-    $('#wireguardCountHint').toggleClass('d-none', !isWg);
     updateWireGuardTotalHint();
     $('#accountLabel').text(isSs ? '加密方式' : '账号');
     $('#passwordLabel').text(['vless', 'vmess'].includes(proto) ? 'UUID' : '密码');
