@@ -838,34 +838,40 @@ def _install_one(row):
 
 
 def _upgrade_one(row):
+    archive_path = _make_project_archive()
     ssh = _ssh_connect(row, timeout=20)
     try:
-        command = r"""python3 - <<'PY'
-import http.cookiejar
-import json
-import urllib.request
-
-base = 'http://127.0.0.1:18080'
-cj = http.cookiejar.CookieJar()
-opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-
-def post(path, body):
-    raw = json.dumps(body).encode('utf-8')
-    req = urllib.request.Request(base + path, data=raw, headers={'Content-Type': 'application/json'}, method='POST')
-    with opener.open(req, timeout=180) as resp:
-        return json.loads(resp.read().decode('utf-8', 'replace'))
-
-login = post('/api/login', {'username': 'admin', 'password': 'admin123'})
-if not login.get('ok'):
-    raise SystemExit('login failed: ' + (login.get('error') or 'unknown'))
-result = post('/api/settings/upgrade-git', {})
-print(json.dumps(result, ensure_ascii=False))
-if not result.get('ok'):
-    raise SystemExit(result.get('error') or 'upgrade failed')
-PY
+        stamp = int(time.time())
+        remote_archive = f"/tmp/42ipwin-lite-upgrade-{stamp}.tar.gz"
+        remote_backup = f"/opt/42IPwin/data/backups/before-upgrade-center-push-{stamp}.tar.gz"
+        sftp = ssh.open_sftp()
+        try:
+            sftp.put(str(archive_path), remote_archive)
+        finally:
+            sftp.close()
+        command = f"""
+set -e
+APP_DIR=/opt/42IPwin
+test -d "$APP_DIR"
+mkdir -p "$APP_DIR/data/backups"
+tar -C "$APP_DIR" -czf {shlex.quote(remote_backup)} panel install_lite.sh restore_macvlans.py sing-box/sing-box 2>/dev/null || true
+tar -xzf {shlex.quote(remote_archive)} -C "$APP_DIR"
+rm -f {shlex.quote(remote_archive)}
+python3 -m py_compile "$APP_DIR/panel/routes/users.py" "$APP_DIR/panel/routes/servers.py" "$APP_DIR/panel/services/proxy_manager.py"
 systemctl restart 42ipwin
 sleep 2
 systemctl is-active 42ipwin
+python3 - <<'PY'
+import pathlib
+import re
+root = pathlib.Path('/opt/42IPwin')
+conf = (root / 'panel/config.py').read_text(encoding='utf-8', errors='replace')
+match = re.search(r"APP_VERSION\\s*=\\s*['\\\"]([^'\\\"]+)", conf)
+print('APP_VERSION=' + (match.group(1) if match else 'missing'))
+print('HAS_WG_NODE_UI=' + str('wgNodeCount' in (root / 'panel/templates/users.html').read_text(encoding='utf-8', errors='replace')))
+print('HAS_WG_BACKEND=' + str('target_node_count' in (root / 'panel/routes/users.py').read_text(encoding='utf-8', errors='replace')))
+print('BACKUP={remote_backup}')
+PY
 """
         code, out, err = _run(ssh, command, timeout=300)
         if code != 0:
@@ -873,6 +879,10 @@ systemctl is-active 42ipwin
         return (out or err)[-1200:]
     finally:
         ssh.close()
+        try:
+            archive_path.unlink()
+        except Exception:
+            pass
 
 
 def _uninstall_lite_one(row):
