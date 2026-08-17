@@ -2461,6 +2461,12 @@ def batch_renew():
     except Exception:
         days = 0
     expire_at = _parse_expire(data.get("expire_at") or "")
+    set_traffic = _normalize_traffic_limit(data.get("set_traffic") or data.get("traffic_limit"))
+    set_bytes = None
+    if set_traffic:
+        set_bytes = parse_size_to_bytes(set_traffic)
+        if not set_bytes:
+            return jsonify({"ok": False, "error": "设置流量格式不正确，例如 20g"}), 400
     if not ids and not remote_ids:
         return jsonify({"ok": False, "error": "请选择节点"}), 400
     if not days and not expire_at:
@@ -2476,6 +2482,8 @@ def batch_renew():
                 user.expire_at = base + timedelta(days=days)
             else:
                 user.expire_at = expire_at
+            if set_bytes:
+                user.traffic_limit = _format_size_limit_text(set_bytes)
             user.bytes_in = 0
             user.bytes_out = 0
             if user.status == 0:
@@ -2509,7 +2517,7 @@ def batch_renew():
                 result = _remote_panel_post(
                     server,
                     "/api/users/batch-renew",
-                    {"ids": user_ids, "days": days, "expire_at": data.get("expire_at") or ""},
+                        {"ids": user_ids, "days": days, "expire_at": data.get("expire_at") or "", "set_traffic": set_traffic},
                     timeout=45,
                 )
                 payload = result.get("data") or {}

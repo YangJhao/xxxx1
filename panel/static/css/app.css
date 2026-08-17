@@ -1002,6 +1002,19 @@ body {
   font-size: 13px;
   font-weight: 800;
 }
+.renew-form {
+  display: grid;
+  gap: 8px;
+}
+.renew-form .form-label:not(:first-child) {
+  margin-top: 8px;
+}
+.renew-close-btn {
+  min-width: 108px;
+  min-height: 48px;
+  border-radius: 28px;
+  font-weight: 850;
+}
 .create-result-modal .modal-header {
   min-height: 82px;
   padding: 22px 30px;
